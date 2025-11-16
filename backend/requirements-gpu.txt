@@ -1,0 +1,24 @@
+# This file contains the dependencies for running the application with GPU acceleration.
+# To install, run: pip install -r requirements-gpu.txt
+
+fastapi==0.121.1
+uvicorn==0.38.0
+websockets==15.0.1
+numpy==1.26.4
+opencv-python==4.9.0.80
+ultralytics==8.3.202
+Pillow==11.3.0
+python-multipart==0.0.20
+
+# For GPU support, you must have a compatible NVIDIA GPU with the correct CUDA and cuDNN versions installed.
+# The torch version below is a placeholder. You MUST install the correct PyTorch version that matches your CUDA toolkit.
+# Find the correct command here: https://pytorch.org/get-started/locally/
+# Example for CUDA 12.1:
+# pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu121
+torch==2.8.0
+torchvision==0.23.0
+
+onnx
+
+# This version of onnxruntime requires a compatible CUDA and cuDNN installation.
+onnxruntime-gpu==1.17.1
