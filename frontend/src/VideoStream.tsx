@@ -80,7 +80,6 @@ const getPromptText = (data: DetectionData | null): string => {
 const VideoStream: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
-  const [wsStatus, setWsStatus] = useState<string>('Connecting...');
   const [detectionData, setDetectionData] = useState<DetectionData | null>(null);
   const [currentMode, setCurrentMode] = useState<string>('practice');
   const [examTargetSequence, setExamTargetSequence] = useState<string>('1234');
@@ -105,7 +104,6 @@ const VideoStream: React.FC = () => {
 
     ws.onopen = () => {
       console.log('WebSocket Connected');
-      setWsStatus('Connected');
       setBackendError(null);
       sendMessage('set_mode', { mode: currentMode, target_sequence: examTargetSequence.split('') });
       sendMessage('set_video_source', { source: '0' });
@@ -164,14 +162,12 @@ const VideoStream: React.FC = () => {
 
     ws.onclose = () => {
       console.log('WebSocket Disconnected');
-      setWsStatus('Disconnected');
       setIsLoading(false);
       setBackendError("WebSocket disconnected. Please ensure the backend server is running.");
     };
 
     ws.onerror = (error) => {
       console.error('WebSocket Error:', error);
-      setWsStatus('Error');
       setIsLoading(false);
       setBackendError(`WebSocket error: ${error}`);
     };
