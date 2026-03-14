@@ -1,0 +1,367 @@
+import os
+import sys
+import cv2
+import math
+import time
+import csv
+import numpy as np
+from PIL import ImageFont, ImageDraw, Image
+from ultralytics import YOLO
+from collections import deque
+import argparse
+import json
+
+def create_video_capture(video_source_str):
+    try:
+        video_source = int(video_source_str)
+    except ValueError:
+        video_source = video_source_str
+    return cv2.VideoCapture(video_source)
+
+def load_mapping(csv_file):
+    mapping, reverse_mapping = {}, {}
+    try:
+        with open(csv_file, newline="", encoding="utf-8") as f:
+            for row in csv.reader(f):
+                if len(row) >= 2:
+                    digit_seq, char = row[0].strip(), row[1].strip()
+                    mapping[digit_seq] = char
+                    reverse_mapping[char] = list(digit_seq)
+    except FileNotFoundError:
+        print(f"Warning: Mapping file not found at {csv_file}.")
+    return mapping, reverse_mapping
+
+def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model_path='flag.pt', mapping_csv_path='mapping.csv', current_mode='practice', current_system='chinese', target_sequence=None, start_exam_signal=False, stop_exam_signal=False, is_flag_required=True, session_state=None):
+    try:
+        with open('config.json', 'r', encoding='utf-8') as f:
+            config = json.load(f)
+    except: return
+
+    ANGLE_TOL_STRICT = config['ANGLE_TOL_STRICT']
+    ANGLE_TOL_NORMAL = config['ANGLE_TOL_NORMAL']
+    ANGLE_TOL_CANCEL = config['ANGLE_TOL_CANCEL']
+    STRAIGHT_ARM_THRESHOLD = config['STRAIGHT_ARM_THRESHOLD']
+    STRAIGHT_ARM_RATIO_THRESHOLD = config.get('STRAIGHT_ARM_RATIO_THRESHOLD', 0.8)
+    MIN_ANGLE_FOR_RATIO_CHECK = config.get('MIN_ANGLE_FOR_RATIO_CHECK', 90)
+    STABLE_DELAY = config['STABLE_DELAY']
+    READY_ANGLE = config['READY_ANGLE']
+    STRAIGHTEN_GRACE_PERIOD = config['STRAIGHTEN_GRACE_PERIOD']
+    SMOOTHING_WINDOW_SIZE = config['SMOOTHING_WINDOW_SIZE']
+    GESTURE_TIMEOUT = config['GESTURE_TIMEOUT']
+    GESTURE_WRIST_DISTANCE_THRESHOLD = config['GESTURE_WRIST_DISTANCE_THRESHOLD']
+    GESTURE_CROSS_BUFFER = config['GESTURE_CROSS_BUFFER']
+    GESTURE_CROSS_COUNT_THRESHOLD = config['GESTURE_CROSS_COUNT_THRESHOLD']
+    TARGET_LOST_TIMEOUT = config['TARGET_LOST_TIMEOUT']
+    PERSON_CONF_THRESHOLD = config.get('PERSON_CONF_THRESHOLD', 0.4)
+    DISPLAY_WIDTH = config['DISPLAY_WIDTH']
+    GRIP_CORNER_DISTANCE_THRESHOLD = 150 
+
+    number_angles = {
+        '0': ((180, ANGLE_TOL_STRICT), (45, ANGLE_TOL_NORMAL)), '1': ((READY_ANGLE, ANGLE_TOL_STRICT), (45, ANGLE_TOL_NORMAL)),
+        '2': ((READY_ANGLE, ANGLE_TOL_STRICT), (90, ANGLE_TOL_STRICT)), '3': ((READY_ANGLE, ANGLE_TOL_STRICT), (135, ANGLE_TOL_NORMAL)),
+        '4': ((READY_ANGLE, ANGLE_TOL_STRICT), (180, ANGLE_TOL_STRICT)), '5': ((135, ANGLE_TOL_NORMAL), (READY_ANGLE, ANGLE_TOL_STRICT)),
+        '6': ((90, ANGLE_TOL_STRICT), (READY_ANGLE, ANGLE_TOL_STRICT)), '7': ((45, ANGLE_TOL_NORMAL), (READY_ANGLE, ANGLE_TOL_STRICT)),
+        '8': ((315, ANGLE_TOL_NORMAL), (90, ANGLE_TOL_STRICT)), '9': ((300, ANGLE_TOL_NORMAL), (135, ANGLE_TOL_NORMAL))
+    }
+    navy_angles = {
+        'A': ((READY_ANGLE, ANGLE_TOL_STRICT), (45, ANGLE_TOL_NORMAL)), 'B': ((READY_ANGLE, ANGLE_TOL_STRICT), (90, ANGLE_TOL_STRICT)),
+        'C': ((READY_ANGLE, ANGLE_TOL_STRICT), (135, ANGLE_TOL_NORMAL)), 'D': ((READY_ANGLE, ANGLE_TOL_STRICT), (180, ANGLE_TOL_STRICT)),
+        'E': ((135, ANGLE_TOL_NORMAL), (READY_ANGLE, ANGLE_TOL_STRICT)), 'F': ((90, ANGLE_TOL_STRICT), (READY_ANGLE, ANGLE_TOL_STRICT)),
+        'G': ((45, ANGLE_TOL_NORMAL), (READY_ANGLE, ANGLE_TOL_STRICT)), 'H': ((315, ANGLE_TOL_NORMAL), (90, ANGLE_TOL_STRICT)),
+        'I': ((315, ANGLE_TOL_NORMAL), (135, ANGLE_TOL_NORMAL)), 'J': ((90, ANGLE_TOL_STRICT), (180, ANGLE_TOL_STRICT)),
+        'K': ((180, ANGLE_TOL_STRICT), (45, ANGLE_TOL_NORMAL)), 'L': ((135, ANGLE_TOL_NORMAL), (45, ANGLE_TOL_NORMAL)),
+        'M': ((90, ANGLE_TOL_STRICT), (45, ANGLE_TOL_NORMAL)), 'N': ((45, ANGLE_TOL_NORMAL), (45, ANGLE_TOL_NORMAL)),
+        'O': ((270, ANGLE_TOL_STRICT), (135, ANGLE_TOL_NORMAL)), 'P': ((180, ANGLE_TOL_STRICT), (90, ANGLE_TOL_STRICT)),
+        'Q': ((135, ANGLE_TOL_NORMAL), (90, ANGLE_TOL_STRICT)), 'R': ((90, ANGLE_TOL_STRICT), (90, ANGLE_TOL_STRICT)),
+        'S': ((45, ANGLE_TOL_NORMAL), (90, ANGLE_TOL_STRICT)), 'T': ((180, ANGLE_TOL_STRICT), (135, ANGLE_TOL_NORMAL)),
+        'U': ((135, ANGLE_TOL_NORMAL), (135, ANGLE_TOL_NORMAL)), 'V': ((45, ANGLE_TOL_NORMAL), (180, ANGLE_TOL_STRICT)),
+        'W': ((135, ANGLE_TOL_NORMAL), (270, ANGLE_TOL_STRICT)), 'X': ((135, ANGLE_TOL_NORMAL), (315, ANGLE_TOL_NORMAL)),
+        'Y': ((90, ANGLE_TOL_STRICT), (135, ANGLE_TOL_NORMAL)), 'Z': ((90, ANGLE_TOL_STRICT), (315, ANGLE_TOL_NORMAL)),
+        # Numbers in Navy/International (same as A-I and K)
+        '1': ((READY_ANGLE, ANGLE_TOL_STRICT), (45, ANGLE_TOL_NORMAL)),
+        '2': ((READY_ANGLE, ANGLE_TOL_STRICT), (90, ANGLE_TOL_STRICT)),
+        '3': ((READY_ANGLE, ANGLE_TOL_STRICT), (135, ANGLE_TOL_NORMAL)),
+        '4': ((READY_ANGLE, ANGLE_TOL_STRICT), (180, ANGLE_TOL_STRICT)),
+        '5': ((135, ANGLE_TOL_NORMAL), (READY_ANGLE, ANGLE_TOL_STRICT)),
+        '6': ((90, ANGLE_TOL_STRICT), (READY_ANGLE, ANGLE_TOL_STRICT)),
+        '7': ((45, ANGLE_TOL_NORMAL), (READY_ANGLE, ANGLE_TOL_STRICT)),
+        '8': ((315, ANGLE_TOL_NORMAL), (90, ANGLE_TOL_STRICT)),
+        '9': ((315, ANGLE_TOL_NORMAL), (135, ANGLE_TOL_NORMAL)),
+        '0': ((180, ANGLE_TOL_STRICT), (45, ANGLE_TOL_NORMAL))
+    }
+
+    def angle_diff(a1, a2): return min(abs(a1-a2), 360-abs(a1-a2))
+    def calc_dist(p1, p2): return math.sqrt((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2) if all(c > 1 for p in [p1,p2] for c in p) else 0.0
+    def is_straight_by_ratio(p_s, p_e, p_w, elbow_angle, ratio_thresh, min_angle):
+        if elbow_angle < min_angle: return False
+        dist_se, dist_ew, dist_sw = calc_dist(p_s, p_e), calc_dist(p_e, p_w), calc_dist(p_s, p_w)
+        return bool((dist_sw / (dist_se + dist_ew)) >= ratio_thresh) if (dist_se + dist_ew) > 0 else False
+    def calc_angle_360(p1,p2,p3,hand='left'):
+        a_x,a_y,b_x,b_y = p1[0]-p2[0], p1[1]-p2[1], p3[0]-p2[0], p3[1]-p2[1]
+        angle = math.degrees(math.atan2(a_x*b_y - a_y*b_x, a_x*b_x + a_y*b_y))
+        return float((360 - angle if hand == 'right' else angle + 360) % 360)
+    def calc_angle_180(p1,p2,p3):
+        if any(c < 1 for p in [p1,p2,p3] for c in p): return 0.0
+        v1,v2 = (p1[0]-p2[0],p1[1]-p2[1]), (p3[0]-p2[0],p3[1]-p2[1])
+        dot = v1[0]*v2[0] + v1[1]*v2[1]
+        mag1,mag2 = math.sqrt(v1[0]**2+v1[1]**2), math.sqrt(v2[0]**2+v2[1]**2)
+        return float(math.degrees(math.acos(max(-1.0,min(1.0, dot/(mag1*mag2)))))) if mag1*mag2 > 0 else 180.0
+    def get_correction_info(current, target, tolerance):
+        diff = current - target
+        while diff > 180: diff -= 360
+        while diff < -180: diff += 360
+        abs_diff = abs(diff)
+        is_ok = bool(abs_diff <= tolerance)
+        if is_ok: advice = "OK"
+        elif diff > 0: advice = f"降{abs_diff:.0f}°"
+        else: advice = f"抬{abs_diff:.0f}°"
+        return is_ok, float(abs_diff), advice
+    def recognize_pose(l_angle, r_angle):
+        if angle_diff(l_angle, 45)<=ANGLE_TOL_CANCEL and angle_diff(r_angle,135)<=ANGLE_TOL_CANCEL: return "cancel"
+        angles_to_check = navy_angles if current_system == 'navy' else number_angles
+        for sig, ((lt,ll),(rt,rl)) in angles_to_check.items():
+            if angle_diff(l_angle,lt)<=ll and angle_diff(r_angle,rt)<=rl: return sig
+        return None
+    def is_ready_pose(l,r): return bool(angle_diff(l,READY_ANGLE)<=ANGLE_TOL_STRICT and angle_diff(r,READY_ANGLE)<=ANGLE_TOL_STRICT)
+    def is_hands_above_head(kpts):
+        if kpts is None or len(kpts)<11: return False
+        nose_y, l_w_y, r_w_y = kpts[0][1], kpts[9][1], kpts[10][1]
+        return bool(all(y > 0 for y in [nose_y, l_w_y, r_w_y]) and l_w_y < nose_y and r_w_y < nose_y)
+
+    pose_model = YOLO(model_path)
+    flag_model = YOLO(flag_model_path)
+    
+    mapping, reverse_mapping = {}, {}
+    if current_system == 'navy':
+        # Combined Alphanumeric for International Semaphore
+        vocab = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        mapping = {char: char for char in vocab}
+        reverse_mapping = {char: list(char) for char in vocab}
+    else:
+        mapping, reverse_mapping = load_mapping(mapping_csv_path)
+
+    cap = create_video_capture(video_source_str)
+    if not cap.isOpened(): return
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    DISPLAY_HEIGHT = int(DISPLAY_WIDTH / (frame_width / frame_height))
+
+    if session_state is None: session_state = {}
+    state, state_timer, current_digit, sequence, display_result = "IDLE", 0, None, [], None
+    word_history, completed_sequences_stack = [], []
+    is_in_challenge_mode, challenge_type = False, "standard"
+    challenge_target_string, challenge_current_word_index, current_char_target_sequence, current_char_next_digit_index, challenge_user_sequence, is_error_locked, challenge_invalid_char = "", 0, [], 0, [], False, None
+    target_person_id, last_known_target_person_bbox, target_lost_start_time = None, None, 0.0
+    cross_sub_state, cross_count, last_gesture_time, gesture_complete = "UNCROSSED", 0, 0, False
+    history = {k: deque(maxlen=SMOOTHING_WINDOW_SIZE) for k in ['left_angle','right_angle','left_elbow','right_elbow']}
+    arm_straight_timer = 0.0
+    frame_counter = 0
+
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret: break
+            current_time = time.time()
+            frame_counter += 1
+            
+            if session_state.get("new_challenge_string") is not None:
+                new_str = session_state["new_challenge_string"]
+                c_payload = session_state.get("challenge_payload", {})
+                challenge_type = c_payload.get("type", "standard")
+                is_in_challenge_mode, word_history, sequence, challenge_user_sequence, is_error_locked = True, [], [], [], False
+                invalid_char = next((c for c in new_str if c not in reverse_mapping), None)
+                if not new_str: state, challenge_target_string, current_char_target_sequence = "CHALLENGE_AWAITING_INPUT", "", []
+                elif invalid_char: state, challenge_target_string, challenge_invalid_char = "CHALLENGE_INVALID_CHAR", new_str, invalid_char
+                else:
+                    state, challenge_target_string, challenge_current_word_index = "IDLE", new_str, 0
+                    current_char_target_sequence = reverse_mapping.get(new_str[0], [])
+                    current_char_next_digit_index = 0
+                    gesture_complete, cross_count, cross_sub_state = False, 0, "UNCROSSED"
+                session_state["new_challenge_string"] = None
+            if session_state.get("stop_challenge_mode"):
+                is_in_challenge_mode, session_state["stop_challenge_mode"] = False, False
+                challenge_target_string, word_history, sequence, challenge_user_sequence, is_error_locked, state = "", [], [], [], False, "IDLE"
+
+            pose_results = pose_model.track(frame, persist=True, verbose=False, conf=PERSON_CONF_THRESHOLD)
+            all_person_boxes, all_person_kpts = {}, {}
+            if pose_results and pose_results[0].boxes is not None and pose_results[0].boxes.id is not None:
+                for box, kpts_obj in zip(pose_results[0].boxes, pose_results[0].keypoints):
+                    if box.id is not None:
+                        p_id = int(box.id.item())
+                        all_person_boxes[p_id] = box.xyxy[0].cpu().numpy()
+                        all_person_kpts[p_id] = kpts_obj.xy[0].cpu().numpy()
+            
+            if target_person_id is None:
+                if is_flag_required:
+                    if frame_counter % 5 == 0:
+                        flag_res = flag_model.predict(frame, conf=0.5, verbose=False)
+                        flag_boxes = flag_res[0].boxes.xyxy.cpu().numpy().tolist() if flag_res and flag_res[0].boxes is not None else []
+                        if flag_boxes and all_person_kpts:
+                            for p_id, kpts in all_person_kpts.items():
+                                l_w, r_w = kpts[9], kpts[10]
+                                for fb in flag_boxes:
+                                    corners = [(fb[0],fb[1]),(fb[2],fb[1]),(fb[0],fb[3]),(fb[2],fb[3])]
+                                    if any(math.sqrt((w[0]-c[0])**2 + (w[1]-c[1])**2) < GRIP_CORNER_DISTANCE_THRESHOLD for w in [l_w,r_w] for c in corners if w[0]>0):
+                                        target_person_id = p_id; break
+                                if target_person_id: break
+                        elif len(all_person_kpts) == 1:
+                            target_person_id = list(all_person_kpts.keys())[0]
+                else:
+                    if all_person_boxes: target_person_id = max(all_person_boxes, key=lambda i: (all_person_boxes[i][2]-all_person_boxes[i][0])*(all_person_boxes[i][3]-all_person_boxes[i][1]))
+
+            target_kpts = all_person_kpts.get(target_person_id) if target_person_id else None
+            if target_person_id and target_kpts is None:
+                if target_lost_start_time == 0.0: target_lost_start_time = current_time
+                if (current_time - target_lost_start_time) > TARGET_LOST_TIMEOUT:
+                    target_person_id = None; state = "IDLE"
+            elif target_kpts is not None:
+                target_lost_start_time = 0.0
+                try:
+                    p_idx = list(pose_results[0].boxes.id.cpu().numpy()).index(target_person_id)
+                    last_known_target_person_bbox = pose_results[0].boxes[p_idx].xyxy[0].cpu().numpy().tolist()
+                except: pass
+                for k, f in {'left_angle':lambda:calc_angle_360(target_kpts[9],target_kpts[5],target_kpts[11],'left'), 'right_angle':lambda:calc_angle_360(target_kpts[10],target_kpts[6],target_kpts[12],'right'), 'left_elbow':lambda:calc_angle_180(target_kpts[5],target_kpts[7],target_kpts[9]), 'right_elbow':lambda:calc_angle_180(target_kpts[6],target_kpts[8],target_kpts[10])}.items():
+                    history[k].append(f())
+
+            detection_data = {
+                "state": state, "prompt_code": None, "cross_count": int(cross_count),
+                "left_angle": None, "right_angle": None, "current_digit": current_digit,
+                "l_arm_status": "N/A", "r_arm_status": "N/A",
+                "sequence": list(challenge_user_sequence if is_in_challenge_mode else sequence),
+                "display_result": display_result, "target_person_bbox": last_known_target_person_bbox if target_person_id else None,
+                "flag_boxes": [], "mode": current_mode, "word_history": list(word_history),
+                "challenge_info": {"is_challenge_mode":bool(is_in_challenge_mode),"challenge_type":challenge_type,"target_string":challenge_target_string,"current_word_index":int(challenge_current_word_index),"current_char_target_sequence":current_char_target_sequence,"current_char_next_digit_index":int(current_char_next_digit_index),"is_error_locked":bool(is_error_locked)},
+                "correction_data": {"target_signal":None,"target_l_angle":None,"target_r_angle":None,"l_angle_diff":None,"r_angle_diff":None,"l_angle_ok":False,"r_angle_ok":False,"l_arm_straight_ok":False,"r_arm_straight_ok":False,"l_advice":"-","r_advice":"-","is_correct":False}
+            }
+
+            if target_kpts is not None and len(history['left_angle']) >= SMOOTHING_WINDOW_SIZE:
+                angs = {k: float(np.mean(v)) for k, v in history.items()}
+                lok_arm = bool(is_straight_by_ratio(target_kpts[5], target_kpts[7], target_kpts[9], angs['left_elbow'], STRAIGHT_ARM_RATIO_THRESHOLD, MIN_ANGLE_FOR_RATIO_CHECK))
+                rok_arm = bool(is_straight_by_ratio(target_kpts[6], target_kpts[8], target_kpts[10], angs['right_elbow'], STRAIGHT_ARM_RATIO_THRESHOLD, MIN_ANGLE_FOR_RATIO_CHECK))
+                detection_data.update({"left_angle":angs['left_angle'], "right_angle":angs['right_angle'], 'l_arm_status':"伸直" if lok_arm else "彎曲", 'r_arm_status':"伸直" if rok_arm else "彎曲"})
+                h_up = bool(is_hands_above_head(target_kpts))
+                
+                if not lok_arm or not rok_arm:
+                    if arm_straight_timer == 0.0: arm_straight_timer = current_time
+                else: arm_straight_timer = 0.0
+                arms_stable_bent = bool(arm_straight_timer > 0 and (current_time - arm_straight_timer) > 1.5)
+
+                if is_in_challenge_mode and challenge_type == "teaching" and current_char_target_sequence and state in ["READY", "DETECTING", "GRACE_PERIOD"] and (angs['left_angle'] > 30 or angs['right_angle'] > 30):
+                    eff_t = current_char_target_sequence[current_char_next_digit_index]
+                    ta = navy_angles.get(eff_t) if current_system == 'navy' else number_angles.get(eff_t)
+                    if ta:
+                        lok, ld, la = get_correction_info(angs['left_angle'], ta[0][0], ta[0][1])
+                        rok, rd, ra = get_correction_info(angs['right_angle'], ta[1][0], ta[1][1])
+                        isc = bool(lok and rok and lok_arm and rok_arm)
+                        detection_data["correction_data"].update({"target_signal":eff_t,"target_l_angle":float(ta[0][0]),"target_r_angle":float(ta[1][0]),"l_angle_diff":float(ld),"r_angle_diff":float(rd),"l_angle_ok":bool(lok),"r_angle_ok":bool(rok),"l_arm_straight_ok":lok_arm,"r_arm_straight_ok":rok_arm,"l_advice":la,"r_advice":ra,"is_correct":isc})
+
+                if state in ["IDLE", "CHALLENGE_READY_TO_END"]:
+                    if gesture_complete and not h_up:
+                        if state == "CHALLENGE_READY_TO_END": state, state_timer = "CHALLENGE_COMPLETE_PROMPT", time.time()
+                        else: state = "WAITING"
+                        gesture_complete, cross_count, cross_sub_state = False, 0, "UNCROSSED"
+                        sequence.clear(); word_history.clear(); challenge_user_sequence.clear(); current_digit, display_result, is_error_locked = None, None, False
+                        if is_in_challenge_mode and state == "WAITING":
+                            challenge_current_word_index = 0
+                            current_char_target_sequence = reverse_mapping.get(challenge_target_string[0], [])
+                            current_char_next_digit_index = 0
+                    elif h_up and not gesture_complete:
+                        if time.time() - last_gesture_time > GESTURE_TIMEOUT: cross_count, cross_sub_state = 0, "UNCROSSED"
+                        is_c = abs(target_kpts[9][0] - target_kpts[10][0]) < GESTURE_WRIST_DISTANCE_THRESHOLD
+                        is_uc = abs(target_kpts[9][0] - target_kpts[10][0]) > (GESTURE_WRIST_DISTANCE_THRESHOLD + GESTURE_CROSS_BUFFER)
+                        if cross_sub_state == "UNCROSSED" and is_c: cross_count += 1; cross_sub_state = "CROSSED"; last_gesture_time = time.time()
+                        if cross_count >= GESTURE_CROSS_COUNT_THRESHOLD: gesture_complete = True
+                        elif cross_sub_state == "CROSSED" and is_uc: cross_sub_state = "UNCROSSED"; last_gesture_time = time.time()
+                elif not h_up and not is_error_locked and state not in ["IDLE", "CHALLENGE_READY_TO_END", "WAITING", "READY", "DETECTING", "GRACE_PERIOD", "COOLDOWN", "CHALLENGE_AWAITING_INPUT", "CHALLENGE_INVALID_CHAR", "CHALLENGE_AWAITING_GESTURE", "CHALLENGE_COMPLETE_PROMPT"]:
+                    state = "IDLE"
+
+                det_p = recognize_pose(angs['left_angle'], angs['right_angle']) if state in ["READY", "DETECTING", "GRACE_PERIOD"] else None
+                if state == "WAITING" and is_ready_pose(angs['left_angle'], angs['right_angle']): state = "READY"
+                elif state == "READY" and det_p is not None: state, current_digit, state_timer = "DETECTING", det_p, time.time()
+                elif state == "DETECTING":
+                    if det_p != current_digit: state, current_digit = "READY", None
+                    elif time.time() - state_timer >= STABLE_DELAY: state, state_timer = "GRACE_PERIOD", time.time()
+                elif state == "GRACE_PERIOD":
+                    if det_p != current_digit: state, current_digit = "READY", None
+                    else:
+                        is_v = (current_digit == "cancel") or (lok_arm and rok_arm)
+                        if is_in_challenge_mode and challenge_type == "teaching":
+                            is_v = (str(current_digit) == str(current_char_target_sequence[current_char_next_digit_index]))
+                        if is_v:
+                            nx_s = "COOLDOWN"
+                            if is_in_challenge_mode:
+                                if current_digit == "cancel":
+                                    if is_error_locked:
+                                        if challenge_user_sequence: challenge_user_sequence.pop()
+                                        is_error_locked, current_char_next_digit_index = False, len(challenge_user_sequence)
+                                elif not is_error_locked or challenge_type == "teaching":
+                                    if challenge_type == "teaching":
+                                        if str(current_digit) == str(current_char_target_sequence[current_char_next_digit_index]):
+                                            challenge_user_sequence.append(str(current_digit)); current_char_next_digit_index += 1
+                                    else:
+                                        challenge_user_sequence.append(str(current_digit)); cl = len(challenge_user_sequence)
+                                        if "".join(challenge_user_sequence) != "".join(current_char_target_sequence[:cl]): is_error_locked = True
+                                        else: current_char_next_digit_index = cl
+                                    if current_char_next_digit_index == len(current_char_target_sequence):
+                                        word_history.append(challenge_target_string[challenge_current_word_index]); challenge_current_word_index += 1
+                                        challenge_user_sequence, current_char_next_digit_index = [], 0
+                                        if challenge_current_word_index >= len(challenge_target_string): nx_s = "CHALLENGE_AWAITING_GESTURE"; current_char_target_sequence = []
+                                        else: current_char_target_sequence = reverse_mapping.get(challenge_target_string[challenge_current_word_index], [])
+                            else:
+                                tsl = 1 if current_system == 'navy' else 4
+                                if current_digit == "cancel":
+                                    if sequence: sequence.pop()
+                                    elif word_history and completed_sequences_stack:
+                                        word_history.pop(); last_seq = completed_sequences_stack.pop(); sequence.clear(); sequence.extend(last_seq[:-1])
+                                elif len(sequence) < tsl: sequence.append(str(current_digit))
+                            state, state_timer, current_digit = nx_s, time.time(), None
+                        elif time.time() - state_timer > STRAIGHTEN_GRACE_PERIOD: state, current_digit = "READY", None
+                elif state in ["COOLDOWN", "CHALLENGE_AWAITING_GESTURE"] and is_ready_pose(angs['left_angle'], angs['right_angle']): state = "READY" if state == "COOLDOWN" else "CHALLENGE_READY_TO_END"
+                elif state == "CHALLENGE_COMPLETE_PROMPT" and time.time() - state_timer > 2.0: state = "CHALLENGE_AWAITING_INPUT"
+
+            pc = None
+            if not target_person_id: pc = "尋找目標 (旗手)..."
+            elif target_kpts is None: pc = "目標遺失，請回畫面"
+            elif state == "CHALLENGE_INVALID_CHAR": pc = f"字元 '{challenge_invalid_char}' 不明"
+            elif state == "CHALLENGE_AWAITING_INPUT": pc = "請設定練習字串"
+            elif state == "CHALLENGE_COMPLETE_PROMPT": pc = "練習完成！"
+            elif state == "CHALLENGE_AWAITING_GESTURE": pc = "完成！請雙手放下"
+            elif state == "CHALLENGE_READY_TO_END": pc = "請做出結束手勢"
+            elif is_in_challenge_mode and challenge_type == "teaching" and state in ["READY", "DETECTING", "GRACE_PERIOD"] and (angs['left_angle']>30 or angs['right_angle']>30):
+                c_d = detection_data["correction_data"]
+                if arms_stable_bent: pc = "請將手臂伸直"
+                elif c_d["is_correct"]: pc = "姿勢正確！請維持..."
+                else:
+                    la, ra = c_d["l_advice"], c_d["r_advice"]
+                    pc = f"左{la}, 右{ra}" if la!="OK" and ra!="OK" else (f"左{la}" if la!="OK" else f"右{ra}")
+            elif is_error_locked: pc = "輸入錯誤！請雙手放下" if not is_ready_pose(angs['left_angle'], angs['right_angle']) else "請比出 [取消] 手勢"
+            elif state == "IDLE": pc = "舉起雙手交叉啟動"
+            elif state == "WAITING": pc = "雙手放下預備"
+            elif state == "READY":
+                if is_in_challenge_mode and current_char_target_sequence: pc = f"請比出 {current_char_target_sequence[current_char_next_digit_index]}"
+                else: pc = "準備就緒，開始比劃"
+            elif state == "DETECTING": pc = f"偵測到 {current_digit}..." if current_digit else "偵測中..."
+            elif state == "GRACE_PERIOD": pc = "判定中..."
+            elif state == "COOLDOWN": pc = "成功！請放下雙手"
+
+            detection_data["prompt_code"], detection_data["state"] = pc, state
+            if current_mode == 'practice' and not is_in_challenge_mode and len(sequence) == (1 if current_system == 'navy' else 4):
+                res = mapping.get("".join(sequence), "□")
+                word_history.append(res); completed_sequences_stack.append(list(sequence)); sequence.clear()
+                detection_data["display_result"] = res
+            rs_f = cv2.resize(frame, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
+            if target_person_id and last_known_target_person_bbox:
+                b = last_known_target_person_bbox
+                cv2.rectangle(rs_f, (int(b[0]*DISPLAY_WIDTH/frame_width), int(b[1]*DISPLAY_HEIGHT/frame_height)), (int(b[2]*DISPLAY_WIDTH/frame_width), int(b[3]*DISPLAY_HEIGHT/frame_height)), (255,0,0), 2)
+            _, jpeg = cv2.imencode('.jpg', rs_f)
+            yield jpeg.tobytes(), detection_data
+    finally: cap.release()
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--video_source', type=str, default='0')
+    parser.add_argument('--model_path', type=str, default='yolo11s-pose.pt')
+    parser.add_argument('--flag_model_path', type=str, default='flag.pt')
+    parser.add_argument('--mapping_csv', type=str, default='mapping.csv')
+    args = parser.parse_args()
+    for f, d in run_detection(video_source_str=args.video_source, model_path=args.model_path, flag_model_path=args.flag_model_path, mapping_csv_path=args.mapping_csv): pass

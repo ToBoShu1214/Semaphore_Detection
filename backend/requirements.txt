@@ -1,0 +1,12 @@
+fastapi==0.121.1
+uvicorn==0.38.0
+websockets==15.0.1
+numpy==1.26.4
+opencv-python==4.9.0.80
+ultralytics==8.3.202
+Pillow==11.3.0
+python-multipart==0.0.20
+torch==2.8.0
+torchvision==0.23.0
+onnx
+onnxruntime==1.17.1
