@@ -28,7 +28,7 @@ def load_mapping(csv_file):
                     mapping[digit_seq] = char
                     reverse_mapping[char] = list(digit_seq)
     except FileNotFoundError:
-        print(f"Warning: Mapping file not found at {csv_file}.")
+        pass
     return mapping, reverse_mapping
 
 def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model_path='flag.pt', mapping_csv_path='mapping.csv', current_mode='practice', current_system='chinese', target_sequence=None, start_exam_signal=False, stop_exam_signal=False, is_flag_required=True, session_state=None):
@@ -40,7 +40,6 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
     ANGLE_TOL_STRICT = config['ANGLE_TOL_STRICT']
     ANGLE_TOL_NORMAL = config['ANGLE_TOL_NORMAL']
     ANGLE_TOL_CANCEL = config['ANGLE_TOL_CANCEL']
-    STRAIGHT_ARM_THRESHOLD = config['STRAIGHT_ARM_THRESHOLD']
     STRAIGHT_ARM_RATIO_THRESHOLD = config.get('STRAIGHT_ARM_RATIO_THRESHOLD', 0.8)
     MIN_ANGLE_FOR_RATIO_CHECK = config.get('MIN_ANGLE_FOR_RATIO_CHECK', 90)
     STABLE_DELAY = config['STABLE_DELAY']
@@ -77,17 +76,11 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
         'U': ((135, ANGLE_TOL_NORMAL), (135, ANGLE_TOL_NORMAL)), 'V': ((45, ANGLE_TOL_NORMAL), (180, ANGLE_TOL_STRICT)),
         'W': ((135, ANGLE_TOL_NORMAL), (270, ANGLE_TOL_STRICT)), 'X': ((135, ANGLE_TOL_NORMAL), (315, ANGLE_TOL_NORMAL)),
         'Y': ((90, ANGLE_TOL_STRICT), (135, ANGLE_TOL_NORMAL)), 'Z': ((90, ANGLE_TOL_STRICT), (315, ANGLE_TOL_NORMAL)),
-        # Numbers in Navy/International (same as A-I and K)
-        '1': ((READY_ANGLE, ANGLE_TOL_STRICT), (45, ANGLE_TOL_NORMAL)),
-        '2': ((READY_ANGLE, ANGLE_TOL_STRICT), (90, ANGLE_TOL_STRICT)),
-        '3': ((READY_ANGLE, ANGLE_TOL_STRICT), (135, ANGLE_TOL_NORMAL)),
-        '4': ((READY_ANGLE, ANGLE_TOL_STRICT), (180, ANGLE_TOL_STRICT)),
-        '5': ((135, ANGLE_TOL_NORMAL), (READY_ANGLE, ANGLE_TOL_STRICT)),
-        '6': ((90, ANGLE_TOL_STRICT), (READY_ANGLE, ANGLE_TOL_STRICT)),
-        '7': ((45, ANGLE_TOL_NORMAL), (READY_ANGLE, ANGLE_TOL_STRICT)),
-        '8': ((315, ANGLE_TOL_NORMAL), (90, ANGLE_TOL_STRICT)),
-        '9': ((315, ANGLE_TOL_NORMAL), (135, ANGLE_TOL_NORMAL)),
-        '0': ((180, ANGLE_TOL_STRICT), (45, ANGLE_TOL_NORMAL))
+        '1': ((READY_ANGLE, ANGLE_TOL_STRICT), (45, ANGLE_TOL_NORMAL)), '2': ((READY_ANGLE, ANGLE_TOL_STRICT), (90, ANGLE_TOL_STRICT)),
+        '3': ((READY_ANGLE, ANGLE_TOL_STRICT), (135, ANGLE_TOL_NORMAL)), '4': ((READY_ANGLE, ANGLE_TOL_STRICT), (180, ANGLE_TOL_STRICT)),
+        '5': ((135, ANGLE_TOL_NORMAL), (READY_ANGLE, ANGLE_TOL_STRICT)), '6': ((90, ANGLE_TOL_STRICT), (READY_ANGLE, ANGLE_TOL_STRICT)),
+        '7': ((45, ANGLE_TOL_NORMAL), (READY_ANGLE, ANGLE_TOL_STRICT)), '8': ((315, ANGLE_TOL_NORMAL), (90, ANGLE_TOL_STRICT)),
+        '9': ((315, ANGLE_TOL_NORMAL), (135, ANGLE_TOL_NORMAL)), '0': ((180, ANGLE_TOL_STRICT), (45, ANGLE_TOL_NORMAL))
     }
 
     def angle_diff(a1, a2): return min(abs(a1-a2), 360-abs(a1-a2))
@@ -106,16 +99,38 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
         dot = v1[0]*v2[0] + v1[1]*v2[1]
         mag1,mag2 = math.sqrt(v1[0]**2+v1[1]**2), math.sqrt(v2[0]**2+v2[1]**2)
         return float(math.degrees(math.acos(max(-1.0,min(1.0, dot/(mag1*mag2)))))) if mag1*mag2 > 0 else 180.0
-    def get_correction_info(current, target, tolerance):
-        diff = current - target
-        while diff > 180: diff -= 360
-        while diff < -180: diff += 360
-        abs_diff = abs(diff)
+
+    def get_correction_info(current, target, tolerance, hand='left'):
+        # 1. 基本判定
+        abs_diff = angle_diff(current, target)
         is_ok = bool(abs_diff <= tolerance)
-        if is_ok: advice = "OK"
-        elif diff > 0: advice = f"降{abs_diff:.0f}°"
-        else: advice = f"抬{abs_diff:.0f}°"
-        return is_ok, float(abs_diff), advice
+        if is_ok: return True, float(abs_diff), "OK"
+
+        # 2. 側別判定 (180度為中線)
+        target_is_opposite = (target > 180)
+        current_is_opposite = (current > 180)
+
+        # 3. 邏輯導引
+        if target_is_opposite and not current_is_opposite:
+            # 目標在對面，手還在同側
+            advice = "往對面擺"
+        elif not target_is_opposite and current_is_opposite:
+            # 目標在同側，手卻擺到了對面
+            advice = "擺回原側"
+        else:
+            # 在同一側，執行抬降判定
+            if not target_is_opposite:
+                # 同向側 (<=180)：數值越大越高
+                # 目前 < 目標 -> 需抬高；目前 > 目標 -> 需放低
+                advice = f"抬{abs_diff:.0f}°" if current < target else f"降{abs_diff:.0f}°"
+            else:
+                # 對向側 (>180)：數值越小越高 (靠近180)
+                # 目前 < 目標 -> 靠近180(太高) -> 需放低
+                # 目前 > 目標 -> 遠離180(太低) -> 需抬高
+                advice = f"降{abs_diff:.0f}°" if current < target else f"抬{abs_diff:.0f}°"
+            
+        return False, float(abs_diff), advice
+
     def recognize_pose(l_angle, r_angle):
         if angle_diff(l_angle, 45)<=ANGLE_TOL_CANCEL and angle_diff(r_angle,135)<=ANGLE_TOL_CANCEL: return "cancel"
         angles_to_check = navy_angles if current_system == 'navy' else number_angles
@@ -130,13 +145,10 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
 
     pose_model = YOLO(model_path)
     flag_model = YOLO(flag_model_path)
-    
     mapping, reverse_mapping = {}, {}
     if current_system == 'navy':
-        # Combined Alphanumeric for International Semaphore
         vocab = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-        mapping = {char: char for char in vocab}
-        reverse_mapping = {char: list(char) for char in vocab}
+        mapping = {char: char for char in vocab}; reverse_mapping = {char: list(char) for char in vocab}
     else:
         mapping, reverse_mapping = load_mapping(mapping_csv_path)
 
@@ -204,16 +216,14 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                                     if any(math.sqrt((w[0]-c[0])**2 + (w[1]-c[1])**2) < GRIP_CORNER_DISTANCE_THRESHOLD for w in [l_w,r_w] for c in corners if w[0]>0):
                                         target_person_id = p_id; break
                                 if target_person_id: break
-                        elif len(all_person_kpts) == 1:
-                            target_person_id = list(all_person_kpts.keys())[0]
+                        elif len(all_person_kpts) == 1: target_person_id = list(all_person_kpts.keys())[0]
                 else:
                     if all_person_boxes: target_person_id = max(all_person_boxes, key=lambda i: (all_person_boxes[i][2]-all_person_boxes[i][0])*(all_person_boxes[i][3]-all_person_boxes[i][1]))
 
             target_kpts = all_person_kpts.get(target_person_id) if target_person_id else None
             if target_person_id and target_kpts is None:
                 if target_lost_start_time == 0.0: target_lost_start_time = current_time
-                if (current_time - target_lost_start_time) > TARGET_LOST_TIMEOUT:
-                    target_person_id = None; state = "IDLE"
+                if (current_time - target_lost_start_time) > TARGET_LOST_TIMEOUT: target_person_id, state = None, "IDLE"
             elif target_kpts is not None:
                 target_lost_start_time = 0.0
                 try:
@@ -223,47 +233,27 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                 for k, f in {'left_angle':lambda:calc_angle_360(target_kpts[9],target_kpts[5],target_kpts[11],'left'), 'right_angle':lambda:calc_angle_360(target_kpts[10],target_kpts[6],target_kpts[12],'right'), 'left_elbow':lambda:calc_angle_180(target_kpts[5],target_kpts[7],target_kpts[9]), 'right_elbow':lambda:calc_angle_180(target_kpts[6],target_kpts[8],target_kpts[10])}.items():
                     history[k].append(f())
 
-            detection_data = {
-                "state": state, "prompt_code": None, "cross_count": int(cross_count),
-                "left_angle": None, "right_angle": None, "current_digit": current_digit,
-                "l_arm_status": "N/A", "r_arm_status": "N/A",
-                "sequence": list(challenge_user_sequence if is_in_challenge_mode else sequence),
-                "display_result": display_result, "target_person_bbox": last_known_target_person_bbox if target_person_id else None,
-                "flag_boxes": [], "mode": current_mode, "word_history": list(word_history),
-                "challenge_info": {"is_challenge_mode":bool(is_in_challenge_mode),"challenge_type":challenge_type,"target_string":challenge_target_string,"current_word_index":int(challenge_current_word_index),"current_char_target_sequence":current_char_target_sequence,"current_char_next_digit_index":int(current_char_next_digit_index),"is_error_locked":bool(is_error_locked)},
-                "correction_data": {"target_signal":None,"target_l_angle":None,"target_r_angle":None,"l_angle_diff":None,"r_angle_diff":None,"l_angle_ok":False,"r_angle_ok":False,"l_arm_straight_ok":False,"r_arm_straight_ok":False,"l_advice":"-","r_advice":"-","is_correct":False}
-            }
-
+            angs, lok_arm, rok_arm, h_up, arms_stable_bent = {}, False, False, False, False
             if target_kpts is not None and len(history['left_angle']) >= SMOOTHING_WINDOW_SIZE:
                 angs = {k: float(np.mean(v)) for k, v in history.items()}
                 lok_arm = bool(is_straight_by_ratio(target_kpts[5], target_kpts[7], target_kpts[9], angs['left_elbow'], STRAIGHT_ARM_RATIO_THRESHOLD, MIN_ANGLE_FOR_RATIO_CHECK))
                 rok_arm = bool(is_straight_by_ratio(target_kpts[6], target_kpts[8], target_kpts[10], angs['right_elbow'], STRAIGHT_ARM_RATIO_THRESHOLD, MIN_ANGLE_FOR_RATIO_CHECK))
-                detection_data.update({"left_angle":angs['left_angle'], "right_angle":angs['right_angle'], 'l_arm_status':"伸直" if lok_arm else "彎曲", 'r_arm_status':"伸直" if rok_arm else "彎曲"})
                 h_up = bool(is_hands_above_head(target_kpts))
-                
-                if not lok_arm or not rok_arm:
+                if not (lok_arm and rok_arm):
                     if arm_straight_timer == 0.0: arm_straight_timer = current_time
                 else: arm_straight_timer = 0.0
                 arms_stable_bent = bool(arm_straight_timer > 0 and (current_time - arm_straight_timer) > 1.5)
 
-                if is_in_challenge_mode and challenge_type == "teaching" and current_char_target_sequence and state in ["READY", "DETECTING", "GRACE_PERIOD"] and (angs['left_angle'] > 30 or angs['right_angle'] > 30):
-                    eff_t = current_char_target_sequence[current_char_next_digit_index]
-                    ta = navy_angles.get(eff_t) if current_system == 'navy' else number_angles.get(eff_t)
-                    if ta:
-                        lok, ld, la = get_correction_info(angs['left_angle'], ta[0][0], ta[0][1])
-                        rok, rd, ra = get_correction_info(angs['right_angle'], ta[1][0], ta[1][1])
-                        isc = bool(lok and rok and lok_arm and rok_arm)
-                        detection_data["correction_data"].update({"target_signal":eff_t,"target_l_angle":float(ta[0][0]),"target_r_angle":float(ta[1][0]),"l_angle_diff":float(ld),"r_angle_diff":float(rd),"l_angle_ok":bool(lok),"r_angle_ok":bool(rok),"l_arm_straight_ok":lok_arm,"r_arm_straight_ok":rok_arm,"l_advice":la,"r_advice":ra,"is_correct":isc})
-
-                if state in ["IDLE", "CHALLENGE_READY_TO_END"]:
+                if state in ["IDLE", "CHALLENGE_READY_TO_END", "READY", "COOLDOWN"]:
                     if gesture_complete and not h_up:
                         if state == "CHALLENGE_READY_TO_END": state, state_timer = "CHALLENGE_COMPLETE_PROMPT", time.time()
-                        else: state = "WAITING"
+                        elif state == "IDLE": state = "WAITING"
+                        else: state = "IDLE"
                         gesture_complete, cross_count, cross_sub_state = False, 0, "UNCROSSED"
                         sequence.clear(); word_history.clear(); challenge_user_sequence.clear(); current_digit, display_result, is_error_locked = None, None, False
                         if is_in_challenge_mode and state == "WAITING":
                             challenge_current_word_index = 0
-                            current_char_target_sequence = reverse_mapping.get(challenge_target_string[0], [])
+                            current_char_target_sequence = list(reverse_mapping.get(challenge_target_string[0], []))
                             current_char_next_digit_index = 0
                     elif h_up and not gesture_complete:
                         if time.time() - last_gesture_time > GESTURE_TIMEOUT: cross_count, cross_sub_state = 0, "UNCROSSED"
@@ -291,9 +281,8 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                             nx_s = "COOLDOWN"
                             if is_in_challenge_mode:
                                 if current_digit == "cancel":
-                                    if is_error_locked:
-                                        if challenge_user_sequence: challenge_user_sequence.pop()
-                                        is_error_locked, current_char_next_digit_index = False, len(challenge_user_sequence)
+                                    if is_error_locked and challenge_user_sequence: challenge_user_sequence.pop()
+                                    is_error_locked, current_char_next_digit_index = False, len(challenge_user_sequence)
                                 elif not is_error_locked or challenge_type == "teaching":
                                     if challenge_type == "teaching":
                                         if str(current_digit) == str(current_char_target_sequence[current_char_next_digit_index]):
@@ -306,7 +295,7 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                                         word_history.append(challenge_target_string[challenge_current_word_index]); challenge_current_word_index += 1
                                         challenge_user_sequence, current_char_next_digit_index = [], 0
                                         if challenge_current_word_index >= len(challenge_target_string): nx_s = "CHALLENGE_AWAITING_GESTURE"; current_char_target_sequence = []
-                                        else: current_char_target_sequence = reverse_mapping.get(challenge_target_string[challenge_current_word_index], [])
+                                        else: current_char_target_sequence = list(reverse_mapping.get(challenge_target_string[challenge_current_word_index], []))
                             else:
                                 tsl = 1 if current_system == 'navy' else 4
                                 if current_digit == "cancel":
@@ -314,10 +303,19 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                                     elif word_history and completed_sequences_stack:
                                         word_history.pop(); last_seq = completed_sequences_stack.pop(); sequence.clear(); sequence.extend(last_seq[:-1])
                                 elif len(sequence) < tsl: sequence.append(str(current_digit))
-                            state, state_timer, current_digit = nx_s, time.time(), None
+                            state, state_timer = nx_s, time.time()
                         elif time.time() - state_timer > STRAIGHTEN_GRACE_PERIOD: state, current_digit = "READY", None
-                elif state in ["COOLDOWN", "CHALLENGE_AWAITING_GESTURE"] and is_ready_pose(angs['left_angle'], angs['right_angle']): state = "READY" if state == "COOLDOWN" else "CHALLENGE_READY_TO_END"
+                elif state in ["COOLDOWN", "CHALLENGE_AWAITING_GESTURE"] and is_ready_pose(angs['left_angle'], angs['right_angle']): state, current_digit = ("READY" if state == "COOLDOWN" else "CHALLENGE_READY_TO_END"), None
                 elif state == "CHALLENGE_COMPLETE_PROMPT" and time.time() - state_timer > 2.0: state = "CHALLENGE_AWAITING_INPUT"
+
+            corr_info = {"target_signal":None,"target_l_angle":None,"target_r_angle":None,"l_angle_diff":None,"r_angle_diff":None,"l_angle_ok":False,"r_angle_ok":False,"l_arm_straight_ok":False,"r_arm_straight_ok":False,"l_advice":"-","r_advice":"-","is_correct":False}
+            if target_kpts is not None and angs and is_in_challenge_mode and challenge_type == "teaching" and current_char_target_sequence and state in ["READY", "DETECTING", "GRACE_PERIOD"] and (angs['left_angle'] > 30 or angs['right_angle'] > 30):
+                eff_t = current_char_target_sequence[current_char_next_digit_index]
+                ta = (navy_angles if current_system == 'navy' else number_angles).get(eff_t)
+                if ta:
+                    lok, ld, la = get_correction_info(angs['left_angle'], ta[0][0], ta[0][1], hand='left')
+                    rok, rd, ra = get_correction_info(angs['right_angle'], ta[1][0], ta[1][1], hand='right')
+                    corr_info.update({"target_signal":eff_t,"target_l_angle":float(ta[0][0]),"target_r_angle":float(ta[1][0]),"l_angle_diff":float(ld),"r_angle_diff":float(rd),"l_angle_ok":bool(lok),"r_angle_ok":bool(rok),"l_arm_straight_ok":lok_arm,"r_arm_straight_ok":rok_arm,"l_advice":la,"r_advice":ra,"is_correct":bool(lok and rok and lok_arm and rok_arm)})
 
             pc = None
             if not target_person_id: pc = "尋找目標 (旗手)..."
@@ -327,14 +325,13 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
             elif state == "CHALLENGE_COMPLETE_PROMPT": pc = "練習完成！"
             elif state == "CHALLENGE_AWAITING_GESTURE": pc = "完成！請雙手放下"
             elif state == "CHALLENGE_READY_TO_END": pc = "請做出結束手勢"
-            elif is_in_challenge_mode and challenge_type == "teaching" and state in ["READY", "DETECTING", "GRACE_PERIOD"] and (angs['left_angle']>30 or angs['right_angle']>30):
-                c_d = detection_data["correction_data"]
+            elif is_in_challenge_mode and challenge_type == "teaching" and state in ["READY", "DETECTING", "GRACE_PERIOD"] and (angs.get('left_angle',0)>30 or angs.get('right_angle',0)>30):
                 if arms_stable_bent: pc = "請將手臂伸直"
-                elif c_d["is_correct"]: pc = "姿勢正確！請維持..."
+                elif corr_info["is_correct"]: pc = "姿勢正確！請維持..."
                 else:
-                    la, ra = c_d["l_advice"], c_d["r_advice"]
+                    la, ra = corr_info["l_advice"], corr_info["r_advice"]
                     pc = f"左{la}, 右{ra}" if la!="OK" and ra!="OK" else (f"左{la}" if la!="OK" else f"右{ra}")
-            elif is_error_locked: pc = "輸入錯誤！請雙手放下" if not is_ready_pose(angs['left_angle'], angs['right_angle']) else "請比出 [取消] 手勢"
+            elif is_error_locked: pc = "輸入錯誤！請雙手放下" if not is_ready_pose(angs.get('left_angle',0), angs.get('right_angle',0)) else "請比出 [取消] 手勢"
             elif state == "IDLE": pc = "舉起雙手交叉啟動"
             elif state == "WAITING": pc = "雙手放下預備"
             elif state == "READY":
@@ -344,11 +341,22 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
             elif state == "GRACE_PERIOD": pc = "判定中..."
             elif state == "COOLDOWN": pc = "成功！請放下雙手"
 
-            detection_data["prompt_code"], detection_data["state"] = pc, state
+            detection_data = {
+                "state": state, "prompt_code": pc, "cross_count": int(cross_count),
+                "left_angle": angs.get('left_angle'), "right_angle": angs.get('right_angle'),
+                "current_digit": current_digit, "l_arm_status": "伸直" if lok_arm else "彎曲", "r_arm_status": "伸直" if rok_arm else "彎曲",
+                "sequence": list(challenge_user_sequence if is_in_challenge_mode else sequence),
+                "display_result": display_result, "target_person_bbox": last_known_target_person_bbox if target_person_id else None,
+                "flag_boxes": [], "mode": current_mode, "word_history": list(word_history),
+                "challenge_info": {"is_challenge_mode":bool(is_in_challenge_mode),"challenge_type":challenge_type,"target_string":challenge_target_string,"current_word_index":int(challenge_current_word_index),"current_char_target_sequence":current_char_target_sequence,"current_char_next_digit_index":int(current_char_next_digit_index),"is_error_locked":bool(is_error_locked)},
+                "correction_data": corr_info
+            }
+
             if current_mode == 'practice' and not is_in_challenge_mode and len(sequence) == (1 if current_system == 'navy' else 4):
                 res = mapping.get("".join(sequence), "□")
                 word_history.append(res); completed_sequences_stack.append(list(sequence)); sequence.clear()
                 detection_data["display_result"] = res
+
             rs_f = cv2.resize(frame, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
             if target_person_id and last_known_target_person_bbox:
                 b = last_known_target_person_bbox
@@ -359,9 +367,7 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--video_source', type=str, default='0')
-    parser.add_argument('--model_path', type=str, default='yolo11s-pose.pt')
-    parser.add_argument('--flag_model_path', type=str, default='flag.pt')
-    parser.add_argument('--mapping_csv', type=str, default='mapping.csv')
+    parser.add_argument('--video_source', type=str, default='0'); parser.add_argument('--model_path', type=str, default='yolo11s-pose.pt')
+    parser.add_argument('--flag_model_path', type=str, default='flag.pt'); parser.add_argument('--mapping_csv', type=str, default='mapping.csv')
     args = parser.parse_args()
     for f, d in run_detection(video_source_str=args.video_source, model_path=args.model_path, flag_model_path=args.flag_model_path, mapping_csv_path=args.mapping_csv): pass
