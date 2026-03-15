@@ -55,16 +55,23 @@
 - **成果展示**: 結束時彈出帶有淡入淡出 (Fade-out) 動畫的放大成果視窗。
 
 ---
-
 ## 🚀 執行與環境配置 (Deployment)
 
 ### 一、Python 後端配置 (建議使用 Conda)
+本系統具備**動態硬體偵測機制**，啟動時會自動檢查 `torch.cuda.is_available()`：
+- **GPU 模式**: 若偵測到 NVIDIA GPU，將自動啟用並開啟 **FP16 (Half-precision)** 運算，極大化推論 FPS。
+- **CPU 模式**: 若無顯卡，系統將自動退回 CPU 運行，確保在一般筆電上也能正常運作。
+
+#### 安裝步驟 (解決路徑空格問題):
 ```bash
 conda create -n semaphore python=3.11 -y
 conda activate semaphore
-# 安裝高效能運算庫 (以 CUDA 12.1 為例)
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-pip install fastapi uvicorn websockets numpy opencv-python ultralytics Pillow python-multipart
+
+# 1. 安裝高效能運算庫 (以 CUDA 12.4 為例)
+python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+# 2. 安裝核心依賴項 (包含追蹤所需的 lapx)
+python -m pip install fastapi uvicorn websockets numpy opencv-python ultralytics Pillow python-multipart lapx
 ```
 
 ### 二、React 前端配置
@@ -73,6 +80,7 @@ cd frontend
 npm install
 npm start
 ```
+
 
 ---
 

@@ -50,14 +50,22 @@
 ## 🚀 快速開始 (Quick Start)
 
 ### 1. 環境準備
-請確保已安裝 **Conda**、**Python 3.11** 與 **Node.js**。建議配備 NVIDIA GPU 以提升辨識流暢度。
+請確保已安裝 **Conda**、**Python 3.11** 與 **Node.js**。本系統具備自動硬體偵測，支援 CPU 運行，但強烈建議配備 NVIDIA GPU 以獲得最佳流暢度。
 
-### 2. 後端啟動 (Backend)
+### 2. 後端配置 (Backend)
+建議使用 Conda 建立環境以避免路徑解析問題：
 ```bash
-cd backend
 conda create -n semaphore python=3.11 -y
 conda activate semaphore
-pip install -r requirements.txt
+
+# 安裝 PyTorch (以 CUDA 12.4 為例)
+python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+# 安裝偵測引擎依賴項
+python -m pip install fastapi uvicorn websockets numpy opencv-python ultralytics Pillow python-multipart lapx
+
+# 啟動後端
+cd backend
 python main.py
 ```
 

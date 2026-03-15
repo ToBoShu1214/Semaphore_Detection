@@ -10,6 +10,7 @@ from ultralytics import YOLO
 from collections import deque
 import argparse
 import json
+import torch
 
 def create_video_capture(video_source_str):
     try:
@@ -32,6 +33,13 @@ def load_mapping(csv_file):
     return mapping, reverse_mapping
 
 def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model_path='flag.pt', mapping_csv_path='mapping.csv', current_mode='practice', current_system='chinese', target_sequence=None, start_exam_signal=False, stop_exam_signal=False, is_flag_required=True, session_state=None):
+    # -----------------------
+    # 初始化設備與效能設定
+    # -----------------------
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    is_gpu = (device == 'cuda')
+    print(f"[INFO] 偵測引擎啟動中... 運行設備: {device.upper()}")
+
     try:
         with open('config.json', 'r', encoding='utf-8') as f:
             config = json.load(f)
@@ -101,34 +109,18 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
         return float(math.degrees(math.acos(max(-1.0,min(1.0, dot/(mag1*mag2)))))) if mag1*mag2 > 0 else 180.0
 
     def get_correction_info(current, target, tolerance, hand='left'):
-        # 1. 基本判定
         abs_diff = angle_diff(current, target)
         is_ok = bool(abs_diff <= tolerance)
         if is_ok: return True, float(abs_diff), "OK"
-
-        # 2. 側別判定 (180度為中線)
         target_is_opposite = (target > 180)
         current_is_opposite = (current > 180)
-
-        # 3. 邏輯導引
-        if target_is_opposite and not current_is_opposite:
-            # 目標在對面，手還在同側
-            advice = "往對面擺"
-        elif not target_is_opposite and current_is_opposite:
-            # 目標在同側，手卻擺到了對面
-            advice = "擺回原側"
+        if target_is_opposite and not current_is_opposite: advice = "往對面擺"
+        elif not target_is_opposite and current_is_opposite: advice = "擺回原側"
         else:
-            # 在同一側，執行抬降判定
             if not target_is_opposite:
-                # 同向側 (<=180)：數值越大越高
-                # 目前 < 目標 -> 需抬高；目前 > 目標 -> 需放低
                 advice = f"抬{abs_diff:.0f}°" if current < target else f"降{abs_diff:.0f}°"
             else:
-                # 對向側 (>180)：數值越小越高 (靠近180)
-                # 目前 < 目標 -> 靠近180(太高) -> 需放低
-                # 目前 > 目標 -> 遠離180(太低) -> 需抬高
                 advice = f"降{abs_diff:.0f}°" if current < target else f"抬{abs_diff:.0f}°"
-            
         return False, float(abs_diff), advice
 
     def recognize_pose(l_angle, r_angle):
@@ -143,8 +135,11 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
         nose_y, l_w_y, r_w_y = kpts[0][1], kpts[9][1], kpts[10][1]
         return bool(all(y > 0 for y in [nose_y, l_w_y, r_w_y]) and l_w_y < nose_y and r_w_y < nose_y)
 
-    pose_model = YOLO(model_path)
-    flag_model = YOLO(flag_model_path)
+    # 載入權重並移至設備 (開啟 FP16 加速)
+    pose_model = YOLO(model_path).to(device)
+    flag_model = YOLO(flag_model_path).to(device)
+    
+    # 建立映射表
     mapping, reverse_mapping = {}, {}
     if current_system == 'navy':
         vocab = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -158,6 +153,7 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     DISPLAY_HEIGHT = int(DISPLAY_WIDTH / (frame_width / frame_height))
 
+    # 狀態變數
     if session_state is None: session_state = {}
     state, state_timer, current_digit, sequence, display_result = "IDLE", 0, None, [], None
     word_history, completed_sequences_stack = [], []
@@ -176,6 +172,7 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
             current_time = time.time()
             frame_counter += 1
             
+            # --- 指令同步 ---
             if session_state.get("new_challenge_string") is not None:
                 new_str = session_state["new_challenge_string"]
                 c_payload = session_state.get("challenge_payload", {})
@@ -194,7 +191,8 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                 is_in_challenge_mode, session_state["stop_challenge_mode"] = False, False
                 challenge_target_string, word_history, sequence, challenge_user_sequence, is_error_locked, state = "", [], [], [], False, "IDLE"
 
-            pose_results = pose_model.track(frame, persist=True, verbose=False, conf=PERSON_CONF_THRESHOLD)
+            # --- 影像辨識 (開啟 GPU 半精度加速) ---
+            pose_results = pose_model.track(frame, persist=True, verbose=False, conf=PERSON_CONF_THRESHOLD, device=device, half=is_gpu)
             all_person_boxes, all_person_kpts = {}, {}
             if pose_results and pose_results[0].boxes is not None and pose_results[0].boxes.id is not None:
                 for box, kpts_obj in zip(pose_results[0].boxes, pose_results[0].keypoints):
@@ -203,10 +201,11 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                         all_person_boxes[p_id] = box.xyxy[0].cpu().numpy()
                         all_person_kpts[p_id] = kpts_obj.xy[0].cpu().numpy()
             
+            # 目標鎖定邏輯
             if target_person_id is None:
                 if is_flag_required:
                     if frame_counter % 5 == 0:
-                        flag_res = flag_model.predict(frame, conf=0.5, verbose=False)
+                        flag_res = flag_model.predict(frame, conf=0.5, verbose=False, device=device, half=is_gpu)
                         flag_boxes = flag_res[0].boxes.xyxy.cpu().numpy().tolist() if flag_res and flag_res[0].boxes is not None else []
                         if flag_boxes and all_person_kpts:
                             for p_id, kpts in all_person_kpts.items():
@@ -220,6 +219,7 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                 else:
                     if all_person_boxes: target_person_id = max(all_person_boxes, key=lambda i: (all_person_boxes[i][2]-all_person_boxes[i][0])*(all_person_boxes[i][3]-all_person_boxes[i][1]))
 
+            # 目標丟失處理
             target_kpts = all_person_kpts.get(target_person_id) if target_person_id else None
             if target_person_id and target_kpts is None:
                 if target_lost_start_time == 0.0: target_lost_start_time = current_time
@@ -233,6 +233,7 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                 for k, f in {'left_angle':lambda:calc_angle_360(target_kpts[9],target_kpts[5],target_kpts[11],'left'), 'right_angle':lambda:calc_angle_360(target_kpts[10],target_kpts[6],target_kpts[12],'right'), 'left_elbow':lambda:calc_angle_180(target_kpts[5],target_kpts[7],target_kpts[9]), 'right_elbow':lambda:calc_angle_180(target_kpts[6],target_kpts[8],target_kpts[10])}.items():
                     history[k].append(f())
 
+            # --- 核心邏輯運算 ---
             angs, lok_arm, rok_arm, h_up, arms_stable_bent = {}, False, False, False, False
             if target_kpts is not None and len(history['left_angle']) >= SMOOTHING_WINDOW_SIZE:
                 angs = {k: float(np.mean(v)) for k, v in history.items()}
@@ -308,8 +309,9 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                 elif state in ["COOLDOWN", "CHALLENGE_AWAITING_GESTURE"] and is_ready_pose(angs['left_angle'], angs['right_angle']): state, current_digit = ("READY" if state == "COOLDOWN" else "CHALLENGE_READY_TO_END"), None
                 elif state == "CHALLENGE_COMPLETE_PROMPT" and time.time() - state_timer > 2.0: state = "CHALLENGE_AWAITING_INPUT"
 
+            # --- 最終傳送資料打包 ---
             corr_info = {"target_signal":None,"target_l_angle":None,"target_r_angle":None,"l_angle_diff":None,"r_angle_diff":None,"l_angle_ok":False,"r_angle_ok":False,"l_arm_straight_ok":False,"r_arm_straight_ok":False,"l_advice":"-","r_advice":"-","is_correct":False}
-            if target_kpts is not None and angs and is_in_challenge_mode and challenge_type == "teaching" and current_char_target_sequence and state in ["READY", "DETECTING", "GRACE_PERIOD"] and (angs['left_angle'] > 30 or angs['right_angle'] > 30):
+            if angs and is_in_challenge_mode and challenge_type == "teaching" and current_char_target_sequence and state in ["READY", "DETECTING", "GRACE_PERIOD"] and (angs['left_angle'] > 30 or angs['right_angle'] > 30):
                 eff_t = current_char_target_sequence[current_char_next_digit_index]
                 ta = (navy_angles if current_system == 'navy' else number_angles).get(eff_t)
                 if ta:
