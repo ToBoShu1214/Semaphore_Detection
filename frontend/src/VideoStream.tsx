@@ -113,7 +113,7 @@ const VideoStream: React.FC = () => {
 
   useEffect(() => {
     setIsLoading(true); 
-    const ws = new WebSocket('ws://localhost:8000/ws');
+    const ws = new WebSocket('ws://127.0.0.1:8000/ws');
     wsRef.current = ws;
     ws.onopen = () => {
       setBackendError(null);

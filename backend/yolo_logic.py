@@ -12,6 +12,12 @@ import argparse
 import json
 import torch
 
+# 取得資源路徑 (PyInstaller 專用邏輯)
+def get_resource_path(relative_path):
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
+
 def create_video_capture(video_source_str):
     try:
         video_source = int(video_source_str)
@@ -41,9 +47,12 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
     print(f"[INFO] 偵測引擎啟動中... 運行設備: {device.upper()}")
 
     try:
-        with open('config.json', 'r', encoding='utf-8') as f:
+        config_path = get_resource_path('config.json')
+        with open(config_path, 'r', encoding='utf-8') as f:
             config = json.load(f)
-    except: return
+    except Exception as e:
+        print(f"[ERROR] 無法讀取 config.json: {e}")
+        return
 
     ANGLE_TOL_STRICT = config['ANGLE_TOL_STRICT']
     ANGLE_TOL_NORMAL = config['ANGLE_TOL_NORMAL']
@@ -123,12 +132,22 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                 advice = f"降{abs_diff:.0f}°" if current < target else f"抬{abs_diff:.0f}°"
         return False, float(abs_diff), advice
 
-    def recognize_pose(l_angle, r_angle):
+    def recognize_pose(l_angle, r_angle, expected_char=None):
         if angle_diff(l_angle, 45)<=ANGLE_TOL_CANCEL and angle_diff(r_angle,135)<=ANGLE_TOL_CANCEL: return "cancel"
         angles_to_check = navy_angles if current_system == 'navy' else number_angles
+        
+        best_match = None
         for sig, ((lt,ll),(rt,rl)) in angles_to_check.items():
-            if angle_diff(l_angle,lt)<=ll and angle_diff(r_angle,rt)<=rl: return sig
-        return None
+            if angle_diff(l_angle,lt)<=ll and angle_diff(r_angle,rt)<=rl:
+                # 關鍵修正：如果是 Navy 系統且有期望值，優先匹配期望值
+                if current_system == 'navy' and expected_char is not None:
+                    if str(sig).upper() == str(expected_char).upper():
+                        return sig
+                # 如果沒有特別期望，回傳第一個找到的
+                if best_match is None:
+                    best_match = sig
+        return best_match
+
     def is_ready_pose(l,r): return bool(angle_diff(l,READY_ANGLE)<=ANGLE_TOL_STRICT and angle_diff(r,READY_ANGLE)<=ANGLE_TOL_STRICT)
     def is_hands_above_head(kpts):
         if kpts is None or len(kpts)<11: return False
@@ -136,8 +155,14 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
         return bool(all(y > 0 for y in [nose_y, l_w_y, r_w_y]) and l_w_y < nose_y and r_w_y < nose_y)
 
     # 載入權重並移至設備 (開啟 FP16 加速)
-    pose_model = YOLO(model_path).to(device)
-    flag_model = YOLO(flag_model_path).to(device)
+    try:
+        final_model_path = get_resource_path(model_path)
+        final_flag_path = get_resource_path(flag_model_path)
+        pose_model = YOLO(final_model_path).to(device)
+        flag_model = YOLO(final_flag_path).to(device)
+    except Exception as e:
+        print(f"[ERROR] 無法載入模型: {e}")
+        return
     
     # 建立映射表
     mapping, reverse_mapping = {}, {}
@@ -145,7 +170,8 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
         vocab = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
         mapping = {char: char for char in vocab}; reverse_mapping = {char: list(char) for char in vocab}
     else:
-        mapping, reverse_mapping = load_mapping(mapping_csv_path)
+        final_csv_path = get_resource_path(mapping_csv_path)
+        mapping, reverse_mapping = load_mapping(final_csv_path)
 
     cap = create_video_capture(video_source_str)
     if not cap.isOpened(): return
@@ -191,7 +217,7 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                 is_in_challenge_mode, session_state["stop_challenge_mode"] = False, False
                 challenge_target_string, word_history, sequence, challenge_user_sequence, is_error_locked, state = "", [], [], [], False, "IDLE"
 
-            # --- 影像辨識 (開啟 GPU 半精度加速) ---
+            # --- 影像辨識 ---
             pose_results = pose_model.track(frame, persist=True, verbose=False, conf=PERSON_CONF_THRESHOLD, device=device, half=is_gpu)
             all_person_boxes, all_person_kpts = {}, {}
             if pose_results and pose_results[0].boxes is not None and pose_results[0].boxes.id is not None:
@@ -266,7 +292,13 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                 elif not h_up and not is_error_locked and state not in ["IDLE", "CHALLENGE_READY_TO_END", "WAITING", "READY", "DETECTING", "GRACE_PERIOD", "COOLDOWN", "CHALLENGE_AWAITING_INPUT", "CHALLENGE_INVALID_CHAR", "CHALLENGE_AWAITING_GESTURE", "CHALLENGE_COMPLETE_PROMPT"]:
                     state = "IDLE"
 
-                det_p = recognize_pose(angs['left_angle'], angs['right_angle']) if state in ["READY", "DETECTING", "GRACE_PERIOD"] else None
+                # 關鍵修正：呼叫 recognize_pose 時傳入期望值
+                expected = None
+                if is_in_challenge_mode and current_char_target_sequence:
+                    expected = current_char_target_sequence[current_char_next_digit_index]
+                
+                det_p = recognize_pose(angs['left_angle'], angs['right_angle'], expected_char=expected) if state in ["READY", "DETECTING", "GRACE_PERIOD"] else None
+                
                 if state == "WAITING" and is_ready_pose(angs['left_angle'], angs['right_angle']): state = "READY"
                 elif state == "READY" and det_p is not None: state, current_digit, state_timer = "DETECTING", det_p, time.time()
                 elif state == "DETECTING":
@@ -303,6 +335,7 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                                     if sequence: sequence.pop()
                                     elif word_history and completed_sequences_stack:
                                         word_history.pop(); last_seq = completed_sequences_stack.pop(); sequence.clear(); sequence.extend(last_seq[:-1])
+                                # 自由練習模式的智慧處理：如果是 Navy 且姿勢相同，我們可以根據上下文決定，或者直接存入 det_p
                                 elif len(sequence) < tsl: sequence.append(str(current_digit))
                             state, state_timer = nx_s, time.time()
                         elif time.time() - state_timer > STRAIGHTEN_GRACE_PERIOD: state, current_digit = "READY", None

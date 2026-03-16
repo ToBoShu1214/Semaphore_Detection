@@ -51,7 +51,8 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=False, 
+    # 診斷模式：開啟控制台以查看報錯
+    console=True, 
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
