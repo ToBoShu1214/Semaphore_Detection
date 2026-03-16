@@ -5,10 +5,29 @@ import asyncio
 from yolo_logic import run_detection, load_mapping # 載入 load_mapping
 import base64
 import json
-import os # 導入 os 模組以檢查檔案是否存在
-from fastapi.staticfiles import StaticFiles # 導入 StaticFiles
+import os
+import sys
+from fastapi.staticfiles import StaticFiles
 
 app = FastAPI()
+
+# 取得資源路徑 (PyInstaller 專用)
+def get_resource_path(relative_path):
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    
+    # 開發環境下的路徑處理
+    base_path = os.path.abspath(".")
+    full_path = os.path.join(base_path, relative_path)
+    
+    # 如果在 backend 目錄下執行，且找不到路徑，嘗試往上一層找
+    if not os.path.exists(full_path):
+        parent_path = os.path.abspath(os.path.join(base_path, ".."))
+        potential_path = os.path.join(parent_path, relative_path)
+        if os.path.exists(potential_path):
+            return potential_path
+            
+    return full_path
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -21,20 +40,25 @@ async def websocket_endpoint(websocket: WebSocket):
     target_sequence = None
     start_exam_signal = False
     stop_exam_signal = False
-    video_source_str = '0' # 預設視訊來源
-    is_flag_required = True # 預設需要旗幟
-    flag_model_path = os.path.join(os.path.dirname(__file__), "flag.pt") # 旗幟模型路徑
-    mapping_csv_path = os.path.join(os.path.dirname(__file__), "mapping.csv") # 對應表 CSV 路徑
+    video_source_str = '0' 
+    is_flag_required = True 
     
-    # 建立每個連線專屬的 session_state 來取代全域變數
+    # 使用 get_resource_path 取得檔案路徑
+    flag_model_path = get_resource_path("flag.pt")
+    mapping_csv_path = get_resource_path("mapping.csv")
+    
     session_state = {
         "new_challenge_string": None,
         "stop_challenge_mode": False,
         "correction_target": None
     }
     
-    # 預先載入對應表以供驗證
-    _, reverse_mapping = load_mapping(mapping_csv_path)
+    # 根據系統初始化對應表
+    if current_system == "navy":
+        vocab = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        reverse_mapping = {char: list(char) for char in vocab}
+    else:
+        _, reverse_mapping = load_mapping(mapping_csv_path)
 
     # 在迴圈外部初始化生成器，但允許其重新初始化
     detection_task = None
@@ -46,14 +70,18 @@ async def websocket_endpoint(websocket: WebSocket):
         nonlocal start_exam_signal
         nonlocal stop_exam_signal
         nonlocal video_source_str
-        nonlocal flag_model_path # 宣告 flag_model_path 為 nonlocal
+        nonlocal flag_model_path
         nonlocal session_state
         nonlocal current_system
+        nonlocal reverse_mapping
 
         # 根據模式決定要載入哪個對應表
         current_mapping_path = mapping_csv_path
         if current_system == "navy":
-            current_mapping_path = os.path.join(os.path.dirname(__file__), "alphabet_mapping.csv")
+            vocab = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+            reverse_mapping = {char: list(char) for char in vocab}
+        else:
+            _, reverse_mapping = load_mapping(mapping_csv_path)
 
         if detection_task:
             detection_task.cancel()
@@ -189,9 +217,8 @@ async def websocket_endpoint(websocket: WebSocket):
         print("WebSocket connection closed.")
 
 # 在所有 API 路由之後，掛載靜態檔案服務
-# 這會將 'frontend/build' 目錄下的檔案作為靜態資源提供
-# 並將所有未匹配的路由導向到 index.html (SPA 模式)
-app.mount("/", StaticFiles(directory="../frontend/build", html=True), name="frontend")
+# 使用 get_resource_path 確保在打包後能找到前端檔案
+app.mount("/", StaticFiles(directory=get_resource_path("frontend/build"), html=True), name="frontend")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

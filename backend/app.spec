@@ -7,6 +7,8 @@ added_files = [
     ('flag.pt', '.'),
     ('mapping.csv', '.'),
     ('config.json', '.'),
+    ('msjh.ttc', '.'),
+    ('app.ico', '.'),
     ('../frontend/build', 'frontend/build'),
 ]
 
@@ -28,6 +30,9 @@ a = Analysis(
         'torch',
         'webview',
         'clr',
+        'requests',
+        'fastapi',
+        'starlette.staticfiles',
     ],
     hookspath=[],
     hooksconfig={},
@@ -51,8 +56,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    # 診斷模式：開啟控制台以查看報錯
-    console=True, 
+    console=False, 
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

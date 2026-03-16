@@ -113,7 +113,9 @@ const VideoStream: React.FC = () => {
 
   useEffect(() => {
     setIsLoading(true); 
-    const ws = new WebSocket('ws://127.0.0.1:8000/ws');
+    // 動態獲取當前 host，避免硬編碼 127.0.0.1
+    const wsUrl = `ws://${window.location.hostname}:8000/ws`;
+    const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
     ws.onopen = () => {
       setBackendError(null);

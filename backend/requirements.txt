@@ -10,3 +10,6 @@ torch==2.8.0
 torchvision==0.23.0
 onnx
 onnxruntime==1.17.1
+pyinstaller==6.11.1
+pywebview==5.4
+requests==2.32.3

@@ -4,6 +4,7 @@ import threading
 import time
 import os
 import sys
+import requests # 需要 pip install requests
 
 # 取得資源路徑
 def get_resource_path(relative_path):
@@ -11,49 +12,72 @@ def get_resource_path(relative_path):
         return os.path.join(sys._MEIPASS, relative_path)
     return os.path.join(os.path.abspath("."), relative_path)
 
+def wait_for_server():
+    """不斷檢查後端是否啟動成功"""
+    url = "http://127.0.0.1:8000/"
+    max_tries = 30 # 最多等 30 秒
+    tries = 0
+    while tries < max_tries:
+        try:
+            # 嘗試連接後端
+            response = requests.get(url, timeout=1)
+            if response.status_code == 200 or response.status_code == 404:
+                print(f"[INFO] 後端伺服器已就緒 (耗時 {tries}s)")
+                return True
+        except:
+            pass
+        time.sleep(1)
+        tries += 1
+    return False
+
 def start_server():
     """啟動 FastAPI 後端服務"""
     try:
         import main
-        # 強制綁定 127.0.0.1 避免 IPv6 解析問題
-        uvicorn.run(main.app, host="127.0.0.1", port=8000, log_level="info")
+        # 使用 0.0.0.0 以增加相容性
+        uvicorn.run(main.app, host="0.0.0.0", port=8000, log_level="info")
     except Exception as e:
-        print(f"[CRITICAL ERROR] 後端啟動失敗: {e}")
+        # 將錯誤寫入日誌檔，方便在打包後偵錯
+        with open("backend_error.log", "w") as f:
+            f.write(f"Error: {e}")
+        print(f"[ERROR] 後端啟動失敗: {e}")
 
 if __name__ == "__main__":
-    print("="*50)
-    print("  旗語辨識教學系統 - 環境相容性啟動器")
-    print("="*50)
-    
-    build_path = get_resource_path(os.path.join("frontend", "build"))
-    if not os.path.exists(build_path):
+    # 資源檢查
+    # 優先嘗試 _MEIPASS (打包後)
+    if hasattr(sys, '_MEIPASS'):
+        build_path = os.path.join(sys._MEIPASS, "frontend", "build")
+    else:
+        # 開發環境
         build_path = os.path.abspath("../frontend/build")
+        if not os.path.exists(build_path):
+            build_path = os.path.join(os.path.abspath("."), "frontend", "build")
 
+    print(f"[DEBUG] 正在尋找前端 Build 路徑: {build_path}")
     if not os.path.exists(build_path):
-        print(f"[ERROR] 找不到網頁檔案於: {build_path}")
-        time.sleep(5)
+        print(f"[ERROR] 找不到前端靜態檔案: {build_path}")
+        # 在開發環境給予明確提示
         sys.exit(1)
 
-    print("[INFO] 偵測硬體環境中...")
-    
-    # 啟動後端
+    # 1. 啟動後端執行緒
     t = threading.Thread(target=start_server, daemon=True)
     t.start()
 
-    # 在 CPU 環境下，模型載入非常緩慢，建議延長等待
-    print("[INFO] 正在載入 AI 模型 (CPU 模式可能需要較長時間)，請稍候...")
-    
-    # 改為動態檢測，或者是極長的固定等待
-    time.sleep(12) 
+    # 2. 智慧等待後端連線 (檢查本機地址)
+    server_ready = wait_for_server()
 
-    print("[INFO] 正在啟動使用者介面...")
+    # 3. 啟動使用者介面 (使用 localhost 載入網頁)
     window = webview.create_window(
         '旗語辨識教學系統', 
-        'http://127.0.0.1:8000', # 這裡也用 127.0.0.1
+        'http://127.0.0.1:8000',
         width=1400,
         height=900,
         min_size=(1024, 768),
         background_color='#282c34'
     )
-    webview.start()
-    sys.exit(0)
+    
+    if server_ready:
+        webview.start()
+    else:
+        print("[CRITICAL] 後端啟動逾時，系統無法開啟。")
+        sys.exit(1)
