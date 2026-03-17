@@ -225,7 +225,9 @@ const VideoStream: React.FC = () => {
       if (state === 'READY' || state === 'DETECTING' || state === 'GRACE_PERIOD') hintImageSrc = '/digits/cancel.png';
       else hintImageSrc = '/digits/stay.png';
     }
-    else if (nextDigit !== null && (state === 'READY' || state === 'DETECTING' || state === 'GRACE_PERIOD')) hintImageSrc = `/digits/${nextDigit}.png`;
+    else if (nextDigit !== null && (state === 'READY' || state === 'DETECTING' || state === 'GRACE_PERIOD')) {
+      hintImageSrc = `/digits/${encodeURIComponent(nextDigit)}.png`;
+    }
   }
 
   const renderTargetString = () => {

@@ -50,7 +50,8 @@ async def websocket_endpoint(websocket: WebSocket):
     session_state = {
         "new_challenge_string": None,
         "stop_challenge_mode": False,
-        "correction_target": None
+        "correction_target": None,
+        "navy_sub_mode": "ALPHA"
     }
     
     # 根據系統初始化對應表
