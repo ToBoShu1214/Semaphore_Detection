@@ -97,7 +97,8 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
         '3': ((READY_ANGLE, ANGLE_TOL_STRICT), (135, ANGLE_TOL_NORMAL)), '4': ((READY_ANGLE, ANGLE_TOL_STRICT), (180, ANGLE_TOL_STRICT)),
         '5': ((135, ANGLE_TOL_NORMAL), (READY_ANGLE, ANGLE_TOL_STRICT)), '6': ((90, ANGLE_TOL_STRICT), (READY_ANGLE, ANGLE_TOL_STRICT)),
         '7': ((45, ANGLE_TOL_NORMAL), (READY_ANGLE, ANGLE_TOL_STRICT)), '8': ((315, ANGLE_TOL_NORMAL), (90, ANGLE_TOL_STRICT)),
-        '9': ((315, ANGLE_TOL_NORMAL), (135, ANGLE_TOL_NORMAL)), '0': ((180, ANGLE_TOL_STRICT), (45, ANGLE_TOL_NORMAL))
+        '9': ((315, ANGLE_TOL_NORMAL), (135, ANGLE_TOL_NORMAL)), '0': ((180, ANGLE_TOL_STRICT), (45, ANGLE_TOL_NORMAL)),
+        '#': ((135, ANGLE_TOL_NORMAL), (180, ANGLE_TOL_STRICT))
     }
 
     def angle_diff(a1, a2): return min(abs(a1-a2), 360-abs(a1-a2))
@@ -135,17 +136,20 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
     def recognize_pose(l_angle, r_angle, expected_char=None):
         if angle_diff(l_angle, 45)<=ANGLE_TOL_CANCEL and angle_diff(r_angle,135)<=ANGLE_TOL_CANCEL: return "cancel"
         angles_to_check = navy_angles if current_system == 'navy' else number_angles
+        nav_mode = session_state.get('navy_sub_mode', 'ALPHA')
         
         best_match = None
         for sig, ((lt,ll),(rt,rl)) in angles_to_check.items():
             if angle_diff(l_angle,lt)<=ll and angle_diff(r_angle,rt)<=rl:
-                # 關鍵修正：如果是 Navy 系統且有期望值，優先匹配期望值
+                if current_system == 'navy' and nav_mode == 'NUMERIC':
+                    if sig in ['J', '#']: return sig # 保留切換信號
+                    if 'A' <= sig <= 'I':
+                        num_map = {'A':'1','B':'2','C':'3','D':'4','E':'5','F':'6','G':'7','H':'8','I':'9'}
+                        sig = num_map[sig]
+                    elif sig == 'K': sig = '0'
                 if current_system == 'navy' and expected_char is not None:
-                    if str(sig).upper() == str(expected_char).upper():
-                        return sig
-                # 如果沒有特別期望，回傳第一個找到的
-                if best_match is None:
-                    best_match = sig
+                    if str(sig).upper() == str(expected_char).upper(): return sig
+                if best_match is None: best_match = sig
         return best_match
 
     def is_ready_pose(l,r): return bool(angle_diff(l,READY_ANGLE)<=ANGLE_TOL_STRICT and angle_diff(r,READY_ANGLE)<=ANGLE_TOL_STRICT)
@@ -204,12 +208,17 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                 c_payload = session_state.get("challenge_payload", {})
                 challenge_type = c_payload.get("type", "standard")
                 is_in_challenge_mode, word_history, sequence, challenge_user_sequence, is_error_locked = True, [], [], [], False
-                invalid_char = next((c for c in new_str if c not in reverse_mapping), None)
+                session_state["navy_sub_mode"] = "ALPHA" # 重置模式為字母
+                invalid_char = next((c for c in new_str if c not in reverse_mapping and not c.isdigit()), None)
                 if not new_str: state, challenge_target_string, current_char_target_sequence = "CHALLENGE_AWAITING_INPUT", "", []
                 elif invalid_char: state, challenge_target_string, challenge_invalid_char = "CHALLENGE_INVALID_CHAR", new_str, invalid_char
                 else:
                     state, challenge_target_string, challenge_current_word_index = "IDLE", new_str, 0
-                    current_char_target_sequence = reverse_mapping.get(new_str[0], [])
+                    first_char = new_str[0]
+                    if current_system == 'navy' and first_char.isdigit():
+                        current_char_target_sequence = ['#']
+                    else:
+                        current_char_target_sequence = list(reverse_mapping.get(first_char, []))
                     current_char_next_digit_index = 0
                     gesture_complete, cross_count, cross_sub_state = False, 0, "UNCROSSED"
                 session_state["new_challenge_string"] = None
@@ -280,7 +289,11 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                         sequence.clear(); word_history.clear(); challenge_user_sequence.clear(); current_digit, display_result, is_error_locked = None, None, False
                         if is_in_challenge_mode and state == "WAITING":
                             challenge_current_word_index = 0
-                            current_char_target_sequence = list(reverse_mapping.get(challenge_target_string[0], []))
+                            first_char = challenge_target_string[0]
+                            if current_system == 'navy' and first_char.isdigit():
+                                current_char_target_sequence = ['#']
+                            else:
+                                current_char_target_sequence = list(reverse_mapping.get(first_char, []))
                             current_char_next_digit_index = 0
                     elif h_up and not gesture_complete:
                         if time.time() - last_gesture_time > GESTURE_TIMEOUT: cross_count, cross_sub_state = 0, "UNCROSSED"
@@ -309,35 +322,54 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                     else:
                         is_v = (current_digit == "cancel") or (lok_arm and rok_arm)
                         if is_in_challenge_mode and challenge_type == "teaching":
-                            is_v = (str(current_digit) == str(current_char_target_sequence[current_char_next_digit_index]))
+                            is_v = (current_digit == "cancel") or (str(current_digit) == str(current_char_target_sequence[current_char_next_digit_index]))
+                        
                         if is_v:
-                            nx_s = "COOLDOWN"
+                            nx_s, is_switch_signal = "COOLDOWN", False
+                            if current_system == 'navy':
+                                if current_digit == '#': session_state["navy_sub_mode"] = "NUMERIC"; is_switch_signal = True
+                                elif current_digit == 'J' and session_state.get("navy_sub_mode") == "NUMERIC": session_state["navy_sub_mode"] = "ALPHA"; is_switch_signal = True
+
                             if is_in_challenge_mode:
                                 if current_digit == "cancel":
                                     if is_error_locked and challenge_user_sequence: challenge_user_sequence.pop()
                                     is_error_locked, current_char_next_digit_index = False, len(challenge_user_sequence)
+                                elif is_switch_signal:
+                                    challenge_user_sequence, current_char_next_digit_index = [], 0
                                 elif not is_error_locked or challenge_type == "teaching":
                                     if challenge_type == "teaching":
-                                        if str(current_digit) == str(current_char_target_sequence[current_char_next_digit_index]):
-                                            challenge_user_sequence.append(str(current_digit)); current_char_next_digit_index += 1
+                                        challenge_user_sequence.append(str(current_digit)); current_char_next_digit_index += 1
                                     else:
                                         challenge_user_sequence.append(str(current_digit)); cl = len(challenge_user_sequence)
                                         if "".join(challenge_user_sequence) != "".join(current_char_target_sequence[:cl]): is_error_locked = True
                                         else: current_char_next_digit_index = cl
-                                    if current_char_next_digit_index == len(current_char_target_sequence):
+                                
+                                # 判斷是否完成目前步驟 (包括切換模式後的重新導引)
+                                if (current_char_next_digit_index == len(current_char_target_sequence)) or is_switch_signal:
+                                    if not is_switch_signal and (current_char_next_digit_index == len(current_char_target_sequence)):
                                         word_history.append(challenge_target_string[challenge_current_word_index]); challenge_current_word_index += 1
-                                        challenge_user_sequence, current_char_next_digit_index = [], 0
-                                        if challenge_current_word_index >= len(challenge_target_string): nx_s = "CHALLENGE_AWAITING_GESTURE"; current_char_target_sequence = []
-                                        else: current_char_target_sequence = list(reverse_mapping.get(challenge_target_string[challenge_current_word_index], []))
+                                    
+                                    challenge_user_sequence, current_char_next_digit_index = [], 0
+                                    if challenge_current_word_index >= len(challenge_target_string):
+                                        nx_s = "CHALLENGE_AWAITING_GESTURE"; current_char_target_sequence = []
+                                    else:
+                                        next_char = challenge_target_string[challenge_current_word_index]
+                                        curr_mode = session_state.get("navy_sub_mode", "ALPHA")
+                                        if current_system == 'navy':
+                                            if next_char.isdigit() and curr_mode == "ALPHA": current_char_target_sequence = ['#']
+                                            elif not next_char.isdigit() and curr_mode == "NUMERIC": current_char_target_sequence = ['J']
+                                            else: current_char_target_sequence = list(reverse_mapping.get(next_char, []))
+                                        else: current_char_target_sequence = list(reverse_mapping.get(next_char, []))
                             else:
-                                tsl = 1 if current_system == 'navy' else 4
-                                if current_digit == "cancel":
-                                    if sequence: sequence.pop()
-                                    elif word_history and completed_sequences_stack:
-                                        word_history.pop(); last_seq = completed_sequences_stack.pop(); sequence.clear(); sequence.extend(last_seq[:-1])
-                                # 自由練習模式的智慧處理：如果是 Navy 且姿勢相同，我們可以根據上下文決定，或者直接存入 det_p
-                                elif len(sequence) < tsl: sequence.append(str(current_digit))
+                                if not is_switch_signal:
+                                    tsl = 1 if current_system == 'navy' else 4
+                                    if current_digit == "cancel":
+                                        if sequence: sequence.pop()
+                                        elif word_history and completed_sequences_stack:
+                                            word_history.pop(); last_seq = completed_sequences_stack.pop(); sequence.clear(); sequence.extend(last_seq[:-1])
+                                    elif len(sequence) < tsl: sequence.append(str(current_digit))
                             state, state_timer = nx_s, time.time()
+                        elif time.time() - state_timer > STRAIGHTEN_GRACE_PERIOD: state, current_digit = "READY", None
                         elif time.time() - state_timer > STRAIGHTEN_GRACE_PERIOD: state, current_digit = "READY", None
                 elif state in ["COOLDOWN", "CHALLENGE_AWAITING_GESTURE"] and is_ready_pose(angs['left_angle'], angs['right_angle']): state, current_digit = ("READY" if state == "COOLDOWN" else "CHALLENGE_READY_TO_END"), None
                 elif state == "CHALLENGE_COMPLETE_PROMPT" and time.time() - state_timer > 2.0: state = "CHALLENGE_AWAITING_INPUT"
