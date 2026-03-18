@@ -77,7 +77,35 @@
 
 ---
 
-## 五、 開發紀錄 (Full Development History)
+## 五、 環境設置 (Environment configuration)
+
+### A. 後端配置 (Backend)
+```bash
+# 建立並啟用環境
+conda create -n semaphore python=3.11 -y
+conda activate semaphore
+
+# 安裝 PyTorch (以 CUDA 12.4 為例)
+python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+# 安裝必要依賴項
+python -m pip install fastapi uvicorn websockets numpy opencv-python ultralytics Pillow python-multipart lapx pywebview pyinstaller
+
+# 啟動服務
+cd backend
+python main.py
+```
+
+### B. 前端啟動 (Frontend)
+```bash
+cd frontend
+npm install
+npm run build
+```
+
+---
+
+## 六、 開發紀錄 (Full Development History)
 
 | 日期 | 重大技術變更與細節紀錄 |
 | :--- | :--- |
@@ -93,7 +121,7 @@
 
 ---
 
-## 六、 未來改進與研發方向
+## 七、 未來改進與研發方向
 
 - **自動化量化考評系統**：開發基於標準偏差的角度精準度評分演算法。
 - **多語系 i18n 支援**：將介面字串抽離，支援國際化教學。
