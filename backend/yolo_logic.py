@@ -57,6 +57,7 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
     ANGLE_TOL_STRICT = config['ANGLE_TOL_STRICT']
     ANGLE_TOL_NORMAL = config['ANGLE_TOL_NORMAL']
     ANGLE_TOL_CANCEL = config['ANGLE_TOL_CANCEL']
+    STRAIGHT_ARM_THRESHOLD = config.get('STRAIGHT_ARM_THRESHOLD', 160)
     STRAIGHT_ARM_RATIO_THRESHOLD = config.get('STRAIGHT_ARM_RATIO_THRESHOLD', 0.8)
     MIN_ANGLE_FOR_RATIO_CHECK = config.get('MIN_ANGLE_FOR_RATIO_CHECK', 90)
     STABLE_DELAY = config['STABLE_DELAY']
@@ -103,7 +104,11 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
 
     def angle_diff(a1, a2): return min(abs(a1-a2), 360-abs(a1-a2))
     def calc_dist(p1, p2): return math.sqrt((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2) if all(c > 1 for p in [p1,p2] for c in p) else 0.0
-    def is_straight_by_ratio(p_s, p_e, p_w, elbow_angle, ratio_thresh, min_angle):
+    def is_straight_by_ratio(p_s, p_e, p_w, elbow_angle, ratio_thresh, straight_angle_thresh, min_angle):
+        # 1. 角度判定：只要手肘角度大於 160°，直接視為伸直
+        if elbow_angle >= straight_angle_thresh: return True
+        
+        # 2. 比例判定：若角度不到 160°，但超過 90° 安全鎖且長度比例夠高，也視為伸直
         if elbow_angle < min_angle: return False
         dist_se, dist_ew, dist_sw = calc_dist(p_s, p_e), calc_dist(p_e, p_w), calc_dist(p_s, p_w)
         return bool((dist_sw / (dist_se + dist_ew)) >= ratio_thresh) if (dist_se + dist_ew) > 0 else False
@@ -272,8 +277,8 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
             angs, lok_arm, rok_arm, h_up, arms_stable_bent = {}, False, False, False, False
             if target_kpts is not None and len(history['left_angle']) >= SMOOTHING_WINDOW_SIZE:
                 angs = {k: float(np.mean(v)) for k, v in history.items()}
-                lok_arm = bool(is_straight_by_ratio(target_kpts[5], target_kpts[7], target_kpts[9], angs['left_elbow'], STRAIGHT_ARM_RATIO_THRESHOLD, MIN_ANGLE_FOR_RATIO_CHECK))
-                rok_arm = bool(is_straight_by_ratio(target_kpts[6], target_kpts[8], target_kpts[10], angs['right_elbow'], STRAIGHT_ARM_RATIO_THRESHOLD, MIN_ANGLE_FOR_RATIO_CHECK))
+                lok_arm = bool(is_straight_by_ratio(target_kpts[5], target_kpts[7], target_kpts[9], angs['left_elbow'], STRAIGHT_ARM_RATIO_THRESHOLD, STRAIGHT_ARM_THRESHOLD, MIN_ANGLE_FOR_RATIO_CHECK))
+                rok_arm = bool(is_straight_by_ratio(target_kpts[6], target_kpts[8], target_kpts[10], angs['right_elbow'], STRAIGHT_ARM_RATIO_THRESHOLD, STRAIGHT_ARM_THRESHOLD, MIN_ANGLE_FOR_RATIO_CHECK))
                 h_up = bool(is_hands_above_head(target_kpts))
                 if not (lok_arm and rok_arm):
                     if arm_straight_timer == 0.0: arm_straight_timer = current_time
