@@ -1,16 +1,10 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 
-interface ExamInfo {
-  target_sequence: string[];
-  current_target_digit: string | null;
-  correct_count: number;
-  total_targets: number;
-  time_elapsed: number;
-  running: boolean;
-  feedback: string;
-  exam_finished: boolean;
+// --- Interfaces ---
+interface ExamStats {
+  total_signals: number;
+  correct_signals: number;
 }
-
 interface ChallengeInfo {
   is_challenge_mode: boolean;
   challenge_type: string;
@@ -20,22 +14,6 @@ interface ChallengeInfo {
   current_char_next_digit_index: number;
   is_error_locked: boolean;
 }
-
-interface CorrectionData {
-    target_signal: string | null;
-    target_l_angle: number | null;
-    target_r_angle: number | null;
-    l_angle_diff: number | null;
-    r_angle_diff: number | null;
-    l_angle_ok: boolean;
-    r_angle_ok: boolean;
-    l_arm_straight_ok: boolean;
-    r_arm_straight_ok: boolean;
-    l_advice: string;
-    r_advice: string;
-    is_correct: boolean;
-}
-
 interface DetectionData {
   left_angle: number | null;
   right_angle: number | null;
@@ -49,340 +27,512 @@ interface DetectionData {
   target_person_bbox: number[] | null;
   flag_boxes: number[][];
   mode: string;
-  exam_info: ExamInfo;
   cross_count: number;
   word_history: string[];
   challenge_info: ChallengeInfo;
-  correction_data: CorrectionData;
+  exam_stats?: ExamStats;
 }
 
 const promptMessages: { [key: string]: (data: DetectionData) => string } = {
-    'WAITING_FOR_PERSON': () => '尋找目標 (旗手)...',
-    'GESTURE_START_PROMPT': () => '舉起雙手交叉啟動',
-    'PRACTICE_WAITING': () => '雙手放下預備',
-    'PRACTICE_READY': () => '準備就緒，開始比劃',
-    'PRACTICE_COOLDOWN': () => '成功！請放下雙手',
+  'WAITING_FOR_PERSON': () => '尋找目標 (旗手)...',
+  'GESTURE_START_PROMPT': () => '舉起雙手交叉啟動',
+  'PRACTICE_WAITING': () => '雙手放下預備',
+  'PRACTICE_READY': () => '準備就緒，開始比劃',
+  'PRACTICE_COOLDOWN': () => '成功！請放下雙手',
 };
 
 const getPromptText = (data: DetectionData | null): string => {
-    if (!data || !data.prompt_code) return '-';
-    const messageFunc = promptMessages[data.prompt_code];
-    return messageFunc ? messageFunc(data) : data.prompt_code;
+  if (!data || !data.prompt_code) return '系統準備中...';
+  const messageFunc = promptMessages[data.prompt_code];
+  return messageFunc ? messageFunc(data) : data.prompt_code;
 };
 
 const VideoStream: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const audioRefs = {
+    correct: useRef<HTMLAudioElement>(new Audio('/digits/correct.mp3')),
+    success: useRef<HTMLAudioElement>(new Audio('/digits/success.mp3')),
+    incorrect: useRef<HTMLAudioElement>(new Audio('/digits/incorrect.mp3')),
+    ok: useRef<HTMLAudioElement>(new Audio('/digits/ok.mp3'))
+  };
+
   const [detectionData, setDetectionData] = useState<DetectionData | null>(null);
-  const [currentMode, setCurrentMode] = useState<string>('practice');
-  const [practiceSubMode, setPracticeSubMode] = useState<string>('free'); 
-  const [currentSystem, setCurrentSystem] = useState<string>('chinese');
-  const [isFlagRequired, setIsFlagRequired] = useState<boolean>(true);
-  const [examTargetSequence, setExamTargetSequence] = useState<string>('1234');
   const [backendError, setBackendError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  
+  const [questions, setQuestions] = useState<{ chinese: string[], navy: string[] }>({ chinese: [], navy: [] });
+  const [mapping, setMapping] = useState<{ [key: string]: string }>({});
+
+  const [system, setSystem] = useState<'chinese' | 'navy'>('chinese');
+  const [role, setRole] = useState<'sender' | 'receiver'>('sender');
+  const [senderMode, setSenderMode] = useState<'free' | 'practice' | 'exam'>('free');
+  const [customPracticeString, setCustomPracticeString] = useState<string>('');
+  
+  const [receiverMode, setReceiverMode] = useState<'learning' | 'exam'>('learning');
+  const [receiverTargetString, setReceiverTargetString] = useState('');
+  const [receiverCurrentIndex, setReceiverCurrentIndex] = useState(0);
+  const [receiverUserAnswer, setReceiverUserAnswer] = useState('');
+  const [receiverFeedback, setReceiverFeedback] = useState<{ text: string, type: 'success' | 'error' | 'neutral' } | null>(null);
+  const [isReceiverActive, setIsReceiverActive] = useState(false);
+  const [receiverOptions, setReceiverOptions] = useState<string[]>([]);
+
+  const [isFlagRequired, setIsFlagRequired] = useState<boolean>(true);
   const [isMirrored, setIsMirrored] = useState(true);
   const [isAudioEnabled, setIsAudioEnabled] = useState(true);
-  const [challengeString, setChallengeString] = useState<string>('');
-  
+  const [isDictionaryOpen, setIsDictionaryOpen] = useState(false);
+  const [isInfoOpen, setIsInfoOpen] = useState(false);
+  const [dictionarySearch, setDictionarySearch] = useState('');
   const [resultOverlay, setResultOverlay] = useState<string | null>(null);
 
-  const correctAudioRef = useRef<HTMLAudioElement | null>(null);
-  const okAudioRef = useRef<HTMLAudioElement | null>(null);
-  const successAudioRef = useRef<HTMLAudioElement | null>(null);
-  const incorrectAudioRef = useRef<HTMLAudioElement | null>(null);
-
   const lastStateRef = useRef<string>('');
-  const lastWordIndexRef = useRef<number>(0);
-  const lastHistoryLengthRef = useRef<number>(0);
-  const lastIsErrorLockedRef = useRef<boolean>(false);
-  const historyBeforeResetRef = useRef<string[]>([]);
 
   useEffect(() => {
-    correctAudioRef.current = new Audio('/digits/correct.mp3');
-    okAudioRef.current = new Audio('/digits/ok.mp3');
-    successAudioRef.current = new Audio('/digits/success.mp3');
-    incorrectAudioRef.current = new Audio('/digits/incorrect.mp3');
+    const baseUrl = `http://${window.location.hostname}:8000`;
+    fetch(`${baseUrl}/api/questions`).then(res => res.json()).then(data => {
+      setQuestions({ chinese: data.chinese || [], navy: data.navy || [] });
+    }).catch(console.error);
+    fetch(`${baseUrl}/api/mapping`).then(res => res.json()).then(data => setMapping(data)).catch(console.error);
   }, []);
 
   const sendMessage = useCallback((command: string, payload?: any) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ command, payload }));
     }
   }, []);
 
   useEffect(() => {
-    setIsLoading(true); 
-    // 動態獲取當前 host，避免硬編碼 127.0.0.1
-    const wsUrl = `ws://${window.location.hostname}:8000/ws`;
-    const ws = new WebSocket(wsUrl);
+    const ws = new WebSocket(`ws://${window.location.hostname}:8000/ws`);
     wsRef.current = ws;
-    ws.onopen = () => {
-      setBackendError(null);
-      sendMessage('set_mode', { mode: currentMode, system: currentSystem, target_sequence: examTargetSequence.split('') });
-      sendMessage('set_video_source', { source: '0' });
-      setIsLoading(false);
-    };
+    ws.onopen = () => sendMessage('set_mode', { mode: 'practice', system });
     ws.onmessage = (event) => {
-      try {
-        const payload = JSON.parse(event.data);
-        if (payload.error) { setBackendError(payload.error); setIsLoading(false); return; }
-        if (payload.image) {
-          const img = new Image();
-          img.onload = () => {
-            const canvas = canvasRef.current;
-            if (canvas) {
-              const ctx = canvas.getContext('2d');
-              if (ctx) { canvas.width = img.width; canvas.height = img.height; ctx.drawImage(img, 0, 0); }
-            }
-            setIsLoading(false);
-          };
-          img.src = `data:image/jpeg;base64,${payload.image}`;
-        }
-        if (payload.data) {
-          const data: DetectionData = payload.data;
-          setDetectionData(data);
-
-          if (isAudioEnabled) {
-            const stateChanged = data.state !== lastStateRef.current;
-            const errorJustLocked = data.challenge_info?.is_error_locked && !lastIsErrorLockedRef.current;
-            const errorJustUnlocked = !data.challenge_info?.is_error_locked && lastIsErrorLockedRef.current;
-
-            if (errorJustLocked) incorrectAudioRef.current?.play().catch(() => {});
-            if ((stateChanged && (data.state === 'COOLDOWN' || data.state === 'CORRECTED_SUCCESS' || data.state === 'CHALLENGE_AWAITING_GESTURE') && !data.challenge_info?.is_error_locked) || errorJustUnlocked) {
-              correctAudioRef.current?.play().catch(() => {});
-            }
-            if (currentSystem !== 'navy') {
-              if (data.challenge_info?.current_word_index > lastWordIndexRef.current) okAudioRef.current?.play().catch(() => {});
-              if (!data.challenge_info?.is_challenge_mode && data.word_history?.length > lastHistoryLengthRef.current) okAudioRef.current?.play().catch(() => {});
-            }
-            const isManualEnd = stateChanged && data.state === 'IDLE' && ['WAITING', 'READY', 'DETECTING', 'COOLDOWN', 'CHALLENGE_AWAITING_GESTURE'].includes(lastStateRef.current);
-            const isChallengeComplete = stateChanged && data.state === 'CHALLENGE_COMPLETE_PROMPT';
-            if (isManualEnd || isChallengeComplete) {
-              successAudioRef.current?.play().catch(() => {});
-              const finalStr = isChallengeComplete ? data.word_history.join('') : historyBeforeResetRef.current.join('');
-              if (finalStr) {
-                setResultOverlay(finalStr);
-                setTimeout(() => setResultOverlay(null), 2500); 
-              }
+      const payload = JSON.parse(event.data);
+      if (payload.image) {
+        const img = new Image();
+        img.onload = () => {
+          const ctx = canvasRef.current?.getContext('2d');
+          if (ctx) { canvasRef.current!.width = img.width; canvasRef.current!.height = img.height; ctx.drawImage(img, 0, 0); }
+        };
+        img.src = `data:image/jpeg;base64,${payload.image}`;
+      }
+      if (payload.data) {
+        const data: DetectionData = payload.data;
+        setDetectionData(data);
+        if (isAudioEnabled) {
+          if (data.state !== lastStateRef.current) {
+            if (data.state === 'CHALLENGE_COMPLETE_PROMPT') {
+              audioRefs.success.current.play().catch(()=>{});
+              setResultOverlay(data.word_history.join(''));
+              setTimeout(() => setResultOverlay(null), 2500);
+            } else if (data.state === 'COOLDOWN' || data.state === 'CHALLENGE_AWAITING_GESTURE') {
+              audioRefs.correct.current.play().catch(()=>{});
+            } else if (data.challenge_info?.is_error_locked) {
+              audioRefs.incorrect.current.play().catch(()=>{});
             }
           }
-          if (data.word_history && data.word_history.length > 0) historyBeforeResetRef.current = data.word_history;
-          lastStateRef.current = data.state;
-          lastWordIndexRef.current = data.challenge_info?.current_word_index || 0;
-          lastHistoryLengthRef.current = data.word_history?.length || 0;
-          lastIsErrorLockedRef.current = !!data.challenge_info?.is_error_locked;
         }
-      } catch (err) { console.error('Error:', err); }
+        lastStateRef.current = data.state;
+      }
     };
-    ws.onclose = () => setBackendError("WebSocket disconnected.");
     return () => ws.close();
-  }, [currentMode, currentSystem, examTargetSequence, sendMessage, isAudioEnabled]);
+  }, [system, sendMessage, isAudioEnabled]);
 
-  const handleModeChange = (mode: string) => {
-    setIsLoading(true);
-    setCurrentMode(mode);
-    if (mode !== 'practice') sendMessage('set_challenge_mode', { enabled: false });
-    sendMessage('set_mode', { mode: mode, system: currentSystem, target_sequence: examTargetSequence.split('') });
+  const startSenderExam = () => {
+    const bank = questions[system];
+    if (bank && bank.length > 0) {
+      const word = bank[Math.floor(Math.random() * bank.length)];
+      setSenderMode('exam');
+      sendMessage('set_challenge_mode', { enabled: true, chars: word, type: 'exam' });
+    } else alert("題庫載入中...");
   };
 
-  const handleSubModeChange = (sub: string) => {
-    setPracticeSubMode(sub);
-    if (sub === 'free') {
-      sendMessage('set_challenge_mode', { enabled: false });
+  const generateOptions = useCallback((correctChar: string) => {
+    let chars: string[] = [];
+    if (system === 'navy') {
+      chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".split('');
     } else {
-      sendMessage('set_challenge_mode', { enabled: true, chars: challengeString, type: sub });
+      chars = Object.keys(mapping).filter(k => k.length === 1 && !/^[A-Z0-9#]$/i.test(k));
+    }
+    const options = new Set<string>();
+    options.add(correctChar);
+    let attempts = 0;
+    while(options.size < 4 && attempts < 100) {
+      if (chars.length > 0) options.add(chars[Math.floor(Math.random() * chars.length)]);
+      attempts++;
+    }
+    return Array.from(options).sort(() => Math.random() - 0.5);
+  }, [mapping, system]);
+
+  const startReceiver = (mode: 'learning' | 'exam') => {
+    if (mode === 'learning') {
+      const learnStr = system === 'navy' ? "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" : "0123456789";
+      setReceiverTargetString(learnStr);
+      setReceiverCurrentIndex(0);
+      setReceiverMode(mode);
+      setIsReceiverActive(true);
+      setReceiverFeedback(null);
+    } else {
+      const bank = questions[system];
+      if (bank && bank.length > 0) {
+        const word = bank[Math.floor(Math.random() * bank.length)];
+        setReceiverTargetString(word);
+        setReceiverCurrentIndex(0);
+        setReceiverMode(mode);
+        setIsReceiverActive(true);
+        setReceiverFeedback(null);
+        setReceiverOptions(generateOptions(word[0]));
+      } else alert("題庫載入中...");
     }
   };
 
-  const handleSetChallengeString = () => {
-    if (challengeString) sendMessage('set_challenge_mode', { enabled: true, chars: challengeString, type: practiceSubMode });
+  const handleReceiverOptionClick = (opt: string) => {
+    if (receiverFeedback?.type === 'success') return;
+    const correctChar = receiverTargetString[receiverCurrentIndex];
+    if (opt === correctChar) {
+      setReceiverFeedback({ text: '正確！', type: 'success' });
+      if (isAudioEnabled) audioRefs.ok.current.play().catch(()=>{});
+      setTimeout(() => {
+        const nextIdx = receiverCurrentIndex + 1;
+        if (nextIdx < receiverTargetString.length) {
+          setReceiverCurrentIndex(nextIdx);
+          setReceiverFeedback(null);
+          if (receiverMode === 'exam') setReceiverOptions(generateOptions(receiverTargetString[nextIdx]));
+        } else {
+          setResultOverlay("測驗完成！");
+          setTimeout(() => {
+            setResultOverlay(null);
+            setIsReceiverActive(false);
+          }, 2500);
+          if (isAudioEnabled) audioRefs.success.current.play().catch(()=>{});
+        }
+      }, 1000);
+    } else {
+      setReceiverFeedback({ text: '錯誤！', type: 'error' });
+      if (isAudioEnabled) audioRefs.incorrect.current.play().catch(()=>{});
+    }
   };
 
-  const handleSystemChange = (system: string) => {
-    setIsLoading(true);
-    setCurrentSystem(system);
-    setChallengeString('');
-    sendMessage('set_challenge_mode', { enabled: false });
-    sendMessage('set_mode', { mode: currentMode, system: system, target_sequence: examTargetSequence.split('') });
-  };
-
-  const challengeInfo = detectionData?.challenge_info;
-  const state = detectionData?.state;
-
-  let hintImageSrc: string | null = null;
-  if (detectionData) {
-    const nextDigit = challengeInfo?.is_challenge_mode &&
-      challengeInfo.current_char_target_sequence.length > 0 &&
-      challengeInfo.current_char_next_digit_index < challengeInfo.current_char_target_sequence.length
-      ? challengeInfo.current_char_target_sequence[challengeInfo.current_char_next_digit_index]
-      : null;
-
-    if (state === 'IDLE' || detectionData.prompt_code?.includes("尋找目標")) hintImageSrc = '/digits/start&end.png';
-    else if (state === 'WAITING' || state === 'COOLDOWN' || state === 'CORRECTED_SUCCESS' || state === 'CHALLENGE_AWAITING_GESTURE') hintImageSrc = '/digits/stay.png';
-    else if (state === 'CHALLENGE_READY_TO_END') hintImageSrc = '/digits/start&end.png';
-    else if (challengeInfo?.is_error_locked) {
-      if (state === 'READY' || state === 'DETECTING' || state === 'GRACE_PERIOD') hintImageSrc = '/digits/cancel.png';
-      else hintImageSrc = '/digits/stay.png';
+  useEffect(() => {
+    if (role === 'receiver' && isReceiverActive) {
+      if (receiverMode === 'learning') {
+        const learnStr = system === 'navy' ? "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" : "0123456789";
+        setReceiverTargetString(learnStr);
+        setReceiverCurrentIndex(0);
+        setReceiverFeedback(null);
+      } else {
+        const bank = questions[system];
+        if (bank && bank.length > 0) {
+          const word = bank[Math.floor(Math.random() * bank.length)];
+          setReceiverTargetString(word);
+          setReceiverCurrentIndex(0);
+          setReceiverFeedback(null);
+          setReceiverOptions(generateOptions(word[0]));
+        }
+      }
     }
-    else if (nextDigit !== null && (state === 'READY' || state === 'DETECTING' || state === 'GRACE_PERIOD')) {
-      hintImageSrc = `/digits/${encodeURIComponent(nextDigit)}.png`;
-    }
-  }
+  }, [system, role, isReceiverActive, receiverMode, questions, generateOptions]);
 
-  const renderTargetString = () => {
-    if (!challengeInfo || !challengeInfo.target_string) return null;
-    return (
-      <div style={{ marginTop: '8px', fontSize: '1.05em', padding: '8px', backgroundColor: '#444', borderRadius: '5px' }}>
-        目標: {' '}
-        {challengeInfo.target_string.split('').map((char, index) => (
-          <strong key={index} style={{ color: index === challengeInfo.current_word_index ? '#FFD700' : 'white', margin: '0 2px' }}>{char}</strong>
-        ))}
-        <span style={{ marginLeft: '10px', color: '#aaa' }}>
-          (
-          {challengeInfo.current_char_target_sequence.map((digit, index) => (
-            <span key={index} style={{ color: index === challengeInfo.current_char_next_digit_index ? '#FFD700' : 'inherit', margin: '0 3px', fontWeight: index === challengeInfo.current_char_next_digit_index ? 'bold' : 'normal' }}>
-              {digit}
-            </span>
-          ))}
-          )
-        </span>
-      </div>
-    );
+  const getHintImage = () => {
+    if (!detectionData) return null;
+    const info = detectionData.challenge_info;
+    if (info?.challenge_type === 'exam') return null;
+    const next = info?.current_char_target_sequence[info.current_char_next_digit_index];
+    if (next) return `/digits/${encodeURIComponent(next)}.png`;
+    return (detectionData.state === 'IDLE' || detectionData.state === 'CHALLENGE_READY_TO_END') ? '/digits/start&end.png' : '/digits/stay.png';
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '10px', backgroundColor: '#282c34', color: 'white', minHeight: '100vh', width: '100%', position: 'relative' }}>
-      <h1>旗語辨識教學系統</h1>
-      
+    <div style={{ display: 'flex', flexDirection: 'column', backgroundColor: '#121212', color: '#e0e0e0', height: '100vh', width: '100vw', overflow: 'hidden' }}>
       {resultOverlay && (
-        <div style={{
-          position: 'absolute', top: '40%', left: '50%', transform: 'translate(-50%, -50%)',
-          backgroundColor: 'rgba(0, 123, 255, 0.95)', padding: '40px 80px', borderRadius: '20px',
-          boxShadow: '0 0 50px rgba(0,0,0,0.6)', zIndex: 999, textAlign: 'center',
-          animation: 'popInOut 2.5s forwards'
-        }}>
-          <h2 style={{ fontSize: '2em', margin: '0 0 10px 0' }}>練習成果</h2>
-          <div style={{ fontSize: '5em', fontWeight: 'bold', letterSpacing: '10px' }}>{resultOverlay}</div>
+        <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', backgroundColor: 'rgba(40, 167, 69, 0.95)', padding: '40px 80px', borderRadius: '20px', zIndex: 999, textAlign: 'center', animation: 'popInOut 2.5s forwards' }}>
+          <h2 style={{ fontSize: '2em' }}>練習完成</h2>
+          <div style={{ fontSize: '5em', fontWeight: 'bold' }}>{resultOverlay}</div>
         </div>
       )}
+      <style>{`.btn-hover:hover { filter: brightness(1.2); } .tab-active { background-color: #007bff !important; color: white !important; } .sys-active { background-color: #28a745 !important; color: white !important; } @keyframes popInOut { 0% { opacity: 0; transform: translate(-50%, -50%) scale(0.5); } 15% { opacity: 1; transform: translate(-50%, -50%) scale(1.05); } 100% { opacity: 0; transform: translate(-50%, -50%) scale(0.9); } }`}</style>
 
-      <style>{`
-        @keyframes popInOut {
-          0% { transform: translate(-50%, -50%) scale(0.5); opacity: 0; }
-          15% { transform: translate(-50%, -50%) scale(1.05); opacity: 1; }
-          20% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
-          80% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
-          100% { transform: translate(-50%, -50%) scale(0.9); opacity: 0; }
-        }
-      `}</style>
-
-      {backendError && (
-        <div style={{ color: '#FF4C6C', fontWeight: 'bold', marginBottom: '20px', border: '2px solid #FF4C6C', padding: '10px', borderRadius: '5px' }}>
-          Backend Error: {backendError} <button onClick={() => window.location.reload()}>重新整理</button>
+      <header style={{ height: '60px', backgroundColor: '#1e1e1e', borderBottom: '1px solid #333', display: 'flex', alignItems: 'center', padding: '0 20px', justifyContent: 'space-between', flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
+          <h1 style={{ margin: 0, fontSize: '1.4em', color: '#fff' }}>🚩 旗語訓練系統</h1>
+          <div style={{ display: 'flex', backgroundColor: '#2d2d2d', borderRadius: '6px', overflow: 'hidden' }}>
+            <button className={`btn-hover ${system === 'chinese' ? 'sys-active' : ''}`} onClick={() => setSystem('chinese')} style={{ padding: '6px 15px', background: 'transparent', border: 'none', color: '#aaa', cursor: 'pointer' }}>童軍 (中文)</button>
+            <button className={`btn-hover ${system === 'navy' ? 'sys-active' : ''}`} onClick={() => setSystem('navy')} style={{ padding: '6px 15px', background: 'transparent', border: 'none', color: '#aaa', cursor: 'pointer', borderLeft: '1px solid #444' }}>海軍 (英文)</button>
+          </div>
         </div>
-      )}
+        <div style={{ display: 'flex', gap: '15px' }}>
+          <label style={{ fontSize: '0.9em' }}><input type="checkbox" checked={isMirrored} onChange={() => setIsMirrored(!isMirrored)} /> 鏡像</label>
+          <label style={{ fontSize: '0.9em' }}><input type="checkbox" checked={isAudioEnabled} onChange={() => setIsAudioEnabled(!isAudioEnabled)} /> 音效</label>
+          <button className="btn-hover" onClick={() => setIsDictionaryOpen(true)} style={{ padding: '6px 15px', backgroundColor: '#6f42c1', color: 'white', border: 'none', borderRadius: '5px', fontWeight: 'bold', cursor: 'pointer' }}>旗語字典</button>
+          <button className="btn-hover" onClick={() => setIsInfoOpen(true)} style={{ width: '32px', height: '32px', borderRadius: '50%', backgroundColor: 'transparent', color: '#aaa', border: '2px solid #aaa', fontFamily: 'serif', fontStyle: 'italic', fontWeight: 'bold', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.2em' }}>i</button>
+        </div>
+      </header>
 
-      <div style={{ width: '100%', maxWidth: '1600px', padding: '15px', backgroundColor: '#333', borderRadius: '8px', marginBottom: '20px' }}>
-        <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
-          <div style={{ flex: '1 1 300px' }}>
-            <h3>主要模式</h3>
+      <div style={{ flex: 1, display: 'flex', padding: '15px', gap: '15px', minHeight: 0 }}>
+        <aside style={{ width: '320px', display: 'flex', flexDirection: 'column', gap: '15px', flexShrink: 0 }}>
+          <div style={{ backgroundColor: '#1e1e1e', borderRadius: '10px', padding: '15px', border: '1px solid #333' }}>
+            <h3 style={{ margin: '0 0 10px 0', fontSize: '1.1em', color: '#aaa' }}>選擇身分</h3>
             <div style={{ display: 'flex', gap: '10px' }}>
-              <button onClick={() => handleModeChange('practice')} style={{ padding: '10px', backgroundColor: currentMode === 'practice' ? '#007bff' : '#6c757d', color: 'white', border: 'none', borderRadius: '5px', flex: 1, fontWeight: 'bold' }}>練習模式</button>
-              <button onClick={() => handleModeChange('exam')} style={{ padding: '10px', backgroundColor: currentMode === 'exam' ? '#dc3545' : '#6c757d', color: 'white', border: 'none', borderRadius: '5px', flex: 1, fontWeight: 'bold' }}>考試模式</button>
-            </div>
-            <h4 style={{ margin: '15px 0 10px 0', color: '#ccc' }}>系統切換</h4>
-            <div style={{ display: 'flex', gap: '10px' }}>
-              <button onClick={() => handleSystemChange('chinese')} style={{ padding: '8px', backgroundColor: currentSystem === 'chinese' ? '#17a2b8' : '#6c757d', color: 'white', border: 'none', borderRadius: '5px', flex: 1 }}>童軍旗語 (中文)</button>
-              <button onClick={() => handleSystemChange('navy')} style={{ padding: '8px', backgroundColor: currentSystem === 'navy' ? '#28a745' : '#6c757d', color: 'white', border: 'none', borderRadius: '5px', flex: 1 }}>國際旗語 (英文)</button>
+              <button className={`btn-hover ${role === 'sender' ? 'tab-active' : ''}`} onClick={() => { setRole('sender'); setIsReceiverActive(false); }} style={{ flex: 1, padding: '10px', background: '#2d2d2d', border: '1px solid #444', borderRadius: '6px', color: '#ccc', cursor: 'pointer' }}>揮旗手 (Sender)</button>
+              <button className={`btn-hover ${role === 'receiver' ? 'tab-active' : ''}`} onClick={() => { setRole('receiver'); sendMessage('set_challenge_mode', { enabled: false }); }} style={{ flex: 1, padding: '10px', background: '#2d2d2d', border: '1px solid #444', borderRadius: '6px', color: '#ccc', cursor: 'pointer' }}>觀察員 (Receiver)</button>
             </div>
           </div>
-          
-          <div style={{ flex: '2 1 500px', borderLeft: '1px solid #555', paddingLeft: '20px' }}>
-            <h3>練習子模式</h3>
-            <div style={{ display: 'flex', gap: '10px', marginBottom: '15px' }}>
-              <button onClick={() => handleSubModeChange('free')} style={{ padding: '10px', backgroundColor: practiceSubMode === 'free' ? '#007bff' : '#444', color: 'white', border: 'none', borderRadius: '5px', flex: 1 }}>自由練習</button>
-              <button onClick={() => handleSubModeChange('standard')} style={{ padding: '10px', backgroundColor: practiceSubMode === 'standard' ? '#fd7e14' : '#444', color: 'white', border: 'none', borderRadius: '5px', flex: 1 }}>指定練習</button>
-              <button onClick={() => handleSubModeChange('teaching')} style={{ padding: '10px', backgroundColor: practiceSubMode === 'teaching' ? '#ffc107' : '#444', color: 'white', border: 'none', borderRadius: '5px', flex: 1, fontWeight: 'bold' }}>教學練習</button>
+
+          <div style={{ backgroundColor: '#1e1e1e', borderRadius: '10px', padding: '15px', border: '1px solid #333', flex: 1, display: 'flex', flexDirection: 'column' }}>
+            <h3 style={{ margin: '0 0 15px 0', fontSize: '1.1em', color: '#aaa' }}>操作面板</h3>
+            {role === 'sender' ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+                <div style={{ background: '#252525', padding: '10px', borderRadius: '6px', border: '1px solid #333' }}>
+                  <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#007bff' }}>1. 自由練習 (無限制)</div>
+                  <button className="btn-hover" onClick={() => { setSenderMode('free'); sendMessage('set_challenge_mode', { enabled: false }); }} style={{ width: '100%', padding: '10px', background: senderMode === 'free' ? '#007bff' : '#444', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>開始自由練習</button>
+                </div>
+                <div style={{ background: '#252525', padding: '10px', borderRadius: '6px', border: '1px solid #333' }}>
+                  <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#ccc' }}>2. 指定練習 (有提示)</div>
+                  <input type="text" value={customPracticeString} onChange={e => setCustomPracticeString(system === 'navy' ? e.target.value.toUpperCase() : e.target.value)} placeholder="輸入字串..." style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid #555', background: '#111', color: 'white', marginBottom: '8px', boxSizing: 'border-box' }} />
+                  <button className="btn-hover" onClick={() => { setSenderMode('practice'); sendMessage('set_challenge_mode', { enabled: true, chars: customPracticeString, type: 'teaching' }); }} style={{ width: '100%', padding: '8px', background: '#17a2b8', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>開始指定練習</button>
+                </div>
+                <div style={{ background: '#252525', padding: '10px', borderRadius: '6px', border: '1px solid #333' }}>
+                  <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#dc3545' }}>3. 隨機測驗 (無提示)</div>
+                  <button className="btn-hover" onClick={startSenderExam} style={{ width: '100%', padding: '10px', background: '#dc3545', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>開始抽考</button>
+                  {senderMode === 'exam' && detectionData?.exam_stats && (
+                    <div style={{ marginTop: '10px', padding: '10px', background: '#111', borderRadius: '4px', fontSize: '0.9em' }}>
+                      正確率: {((detectionData.exam_stats.correct_signals / (detectionData.exam_stats.total_signals || 1)) * 100).toFixed(1)}%
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+                <div style={{ background: '#252525', padding: '10px', borderRadius: '6px', border: '1px solid #333' }}>
+                  <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#17a2b8' }}>1. 基礎教學 (循序)</div>
+                  <button className="btn-hover" onClick={() => startReceiver('learning')} style={{ width: '100%', padding: '10px', background: '#17a2b8', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>開始教學認字</button>
+                </div>
+                <div style={{ background: '#252525', padding: '10px', borderRadius: '6px', border: '1px solid #333' }}>
+                  <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#dc3545' }}>2. 隨機測驗 (選擇題)</div>
+                  <button className="btn-hover" onClick={() => startReceiver('exam')} style={{ width: '100%', padding: '10px', background: '#dc3545', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>開始測驗填字</button>
+                </div>
+              </div>
+            )}
+          </div>
+        </aside>
+
+        <main style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '15px', minWidth: 0 }}>
+          <div style={{ height: '85px', backgroundColor: '#1e1e1e', borderRadius: '10px', border: '1px solid #333', display: 'flex', alignItems: 'center', padding: '0 25px', justifyContent: 'space-between' }}>
+            <div style={{ fontSize: '1.6em', fontWeight: 'bold', color: '#FF4C6C' }}>
+              {role === 'sender' ? getPromptText(detectionData) : (isReceiverActive ? (receiverMode === 'learning' ? `📚 基礎教學 (${receiverCurrentIndex + 1} / ${receiverTargetString.length})` : `📝 測驗進行中 (${receiverCurrentIndex + 1} / ${receiverTargetString.length})`) : '請選擇左側模式以開始')}
             </div>
-            {practiceSubMode !== 'free' && (
-              <div style={{ display: 'flex', gap: '10px' }}>
-                <input type="text" placeholder="輸入練習字串..." value={challengeString} onChange={(e) => setChallengeString(currentSystem === 'navy' ? e.target.value.toUpperCase() : e.target.value)} style={{ padding: '10px', borderRadius: '4px', border: '1px solid #ccc', color: 'black', flex: 1 }}/>
-                <button onClick={handleSetChallengeString} style={{ padding: '10px 20px', backgroundColor: '#17a2b8', color: 'white', border: 'none', borderRadius: '5px', fontWeight: 'bold' }}>開始練習</button>
+            {detectionData?.challenge_info?.target_string && role === 'sender' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '20px', background: '#000', padding: '10px 20px', borderRadius: '8px', border: '1px solid #444' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                  <span style={{ fontSize: '0.8em', color: '#888' }}>目標文字</span>
+                  <div style={{ fontSize: '1.5em', fontWeight: 'bold' }}>
+                    {detectionData.challenge_info.target_string.split('').map((c, i) => (
+                      <span key={i} style={{ color: i === detectionData.challenge_info.current_word_index ? '#FFD700' : '#fff' }}>{c}</span>
+                    ))}
+                  </div>
+                </div>
+                <div style={{ width: '1px', height: '30px', background: '#444' }}></div>
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  <span style={{ fontSize: '0.8em', color: '#888' }}>信號序列</span>
+                  <div style={{ fontSize: '1.3em', letterSpacing: '5px' }}>
+                    {detectionData.challenge_info.current_char_target_sequence.map((s, i) => (
+                      <strong key={i} style={{ 
+                        color: i === detectionData.challenge_info.current_char_next_digit_index ? '#FFD700' : (i < detectionData.challenge_info.current_char_next_digit_index ? '#333' : '#666'),
+                        textDecoration: i < detectionData.challenge_info.current_char_next_digit_index ? 'line-through' : 'none'
+                      }}>{s}</strong>
+                    ))}
+                  </div>
+                </div>
               </div>
             )}
           </div>
 
-          <div style={{ flex: '1 1 200px', borderLeft: '1px solid #555', paddingLeft: '20px' }}>
-            <h3>全域設定</h3>
-            <label style={{ display: 'block', cursor: 'pointer', marginBottom: '10px' }}>
-                <input type="checkbox" checked={isFlagRequired} onChange={(e) => { setIsFlagRequired(e.target.checked); sendMessage('set_flag_requirement', { required: e.target.checked }); }} /> 需要旗幟
-            </label>
-            <label style={{ display: 'block', cursor: 'pointer', marginBottom: '10px' }}>
-                <input type="checkbox" checked={isMirrored} onChange={() => setIsMirrored(!isMirrored)} /> 鏡像畫面
-            </label>
-            <label style={{ display: 'block', cursor: 'pointer' }}>
-                <input type="checkbox" checked={isAudioEnabled} onChange={() => setIsAudioEnabled(!isAudioEnabled)} /> 啟用音效
-            </label>
-          </div>
-        </div>
-      </div>
-
-      {/* Main Content */}
-      <div style={{ display: 'flex', gap: '20px', width: '100%', maxWidth: '1600px', alignItems: 'stretch' }}>
-        <div style={{ flex: '2 1 0', border: '1px solid #444', borderRadius: '8px', overflow: 'hidden', position: 'relative', backgroundColor: '#000', display: 'flex', alignItems: 'center' }}>
-          {isLoading && <div style={{ position: 'absolute', zIndex: 10, width: '100%', height: '100%', backgroundColor: 'rgba(0,0,0,0.7)', display: 'flex', justifyContent: 'center', alignItems: 'center', fontSize: '2em' }}>Loading...</div>}
-          <canvas ref={canvasRef} style={{ width: '100%', height: 'auto', display: 'block', transform: isMirrored ? 'scaleX(-1)' : 'none' }} />
-        </div>
-
-        <div style={{ flex: '1 1 0', backgroundColor: '#333', padding: '15px 20px', borderRadius: '8px', display: 'flex', flexDirection: 'column', overflowY: 'auto' }}>
-          {detectionData ? (
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-              {/* Prompt Section - COMPACTED */}
-              <div style={{ marginBottom: '15px', minHeight: '120px', display: 'flex', flexDirection: 'column', justifyContent: 'flex-start' }}>
-                <p style={{ fontSize: '1em', margin: '0 0 2px 0', color: '#aaa' }}><strong>目前提示:</strong></p>
-                <div style={{ minHeight: '2.5em', display: 'flex', alignItems: 'center' }}>
-                  <span style={{ color: '#FF4C6C', fontWeight: 'bold', fontSize: '1.6em', lineHeight: '1.2' }}>{getPromptText(detectionData)}</span>
-                </div>
-                {practiceSubMode !== 'free' && renderTargetString()}
-              </div>
-
-              {/* Reference Image Section - COMPACTED */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                <div style={{ padding: '10px', backgroundColor: '#444', borderRadius: '8px', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '170px' }}>
-                  <h4 style={{ margin: '0 0 5px 0', color: '#ccc', fontSize: '0.9em' }}>動作參考</h4>
-                  {hintImageSrc ? (
-                    <div style={{ width: '100%', height: '140px', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-                      <img src={hintImageSrc} alt="Hint" style={{ maxHeight: '100%', maxWidth: '100%', objectFit: 'contain', transform: isMirrored ? 'scaleX(-1)' : 'none', transition: 'transform 0.3s ease' }} />
+          <div style={{ flex: 1, backgroundColor: '#000', borderRadius: '10px', border: '1px solid #333', position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+            {role === 'sender' ? (
+              <>
+                <canvas ref={canvasRef} style={{ width: '100%', height: '100%', objectFit: 'contain', transform: isMirrored ? 'scaleX(-1)' : 'none' }} />
+                {detectionData && (
+                  <div style={{ position: 'absolute', top: '20px', left: '20px', backgroundColor: 'rgba(0,0,0,0.7)', padding: '15px', borderRadius: '10px', color: 'white', fontSize: '1.1em', border: '1px solid #555', zIndex: 10 }}>
+                    <div style={{ color: '#aaa', fontSize: '0.85em', marginBottom: '8px' }}>關節角度偵測</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'auto 60px auto', gap: '8px 12px', alignItems: 'center' }}>
+                      <span style={{ whiteSpace: 'nowrap' }}>左手:</span> 
+                      <strong style={{ color: '#FFD700', textAlign: 'right' }}>
+                        {detectionData.left_angle !== null ? `${Math.round(detectionData.left_angle)}°` : '---'}
+                      </strong> 
+                      <span style={{ fontSize: '0.85em', whiteSpace: 'nowrap' }}>({detectionData.l_arm_status})</span>
+                      
+                      <span style={{ whiteSpace: 'nowrap' }}>右手:</span> 
+                      <strong style={{ color: '#FFD700', textAlign: 'right' }}>
+                        {detectionData.right_angle !== null ? `${Math.round(detectionData.right_angle)}°` : '---'}
+                      </strong> 
+                      <span style={{ fontSize: '0.85em', whiteSpace: 'nowrap' }}>({detectionData.r_arm_status})</span>
                     </div>
-                  ) : <p>無</p>}
-                </div>
-
-                <hr style={{ borderColor: '#555', width: '100%', margin: '5px 0' }} />
-
-                <div style={{ fontSize: '0.95em' }}>
-                  <p style={{ margin: '3px 0' }}><strong>偵測狀態:</strong> {detectionData.state}</p>
-                  {/* COMBINED LINE: Angles and Arms */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', margin: '3px 0' }}>
-                    <span><strong>角度:</strong> L {detectionData.left_angle?.toFixed(0)}° / R {detectionData.right_angle?.toFixed(0)}°</span>
-                    <span><strong>手臂:</strong> L{detectionData.l_arm_status} / R{detectionData.r_arm_status}</span>
+                  </div>
+                )}
+                {getHintImage() && (
+                  <div style={{ position: 'absolute', bottom: '25px', right: '25px', width: '220px', height: '220px', backgroundColor: '#666', borderRadius: '15px', padding: '15px', border: '4px solid #007bff', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 10px 30px rgba(0,0,0,0.5)' }}>
+                    <img src={getHintImage()!} alt="Hint" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', transform: isMirrored ? 'scaleX(-1)' : 'none' }} />
+                  </div>
+                )}
+              </>
+            ) : (
+              isReceiverActive && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '30px', alignItems: 'center', width: '100%' }}>
+                  {receiverFeedback && (
+                    <div style={{ position: 'absolute', top: '20px', fontSize: '2em', fontWeight: 'bold', color: receiverFeedback.type === 'success' ? '#28a745' : '#dc3545', background: '#fff', padding: '10px 30px', borderRadius: '15px', zIndex: 10 }}>
+                      {receiverFeedback.text}
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', gap: '15px', background: '#fff', borderRadius: '20px', padding: '25px', justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap', maxWidth: '80%' }}>
+                    {(() => {
+                      const correctChar = receiverTargetString[receiverCurrentIndex];
+                      const seq = mapping[correctChar] || correctChar;
+                      return seq.split('').map((c, i) => (
+                        <img key={i} src={`/digits/${encodeURIComponent(c)}.png`} style={{ width: '120px', height: '120px', objectFit: 'contain' }} alt={c} />
+                      ));
+                    })()}
                   </div>
                   
-                  <p style={{ marginTop: '10px', fontWeight: 'bold', color: '#FFD700', fontSize: '0.9em' }}>目前序列:</p>
-                  <div style={{ backgroundColor: '#222', padding: '6px', borderRadius: '5px', fontSize: '1.3em', letterSpacing: '6px', textAlign: 'center', border: '1px solid #555' }}>
-                    {detectionData.sequence?.join(' ') || '---'}
-                  </div>
-
-                  <p style={{ marginTop: '10px', fontWeight: 'bold', color: '#aaa', fontSize: '0.9em' }}>歷史記錄:</p>
-                  <div style={{ backgroundColor: '#222', padding: '8px', borderRadius: '5px', minHeight: '45px', fontSize: '1.2em', letterSpacing: '2px', wordBreak: 'break-all' }}>
-                    {detectionData.word_history?.join(' ') || '暫無'}
-                  </div>
+                  {receiverMode === 'learning' ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '20px' }}>
+                      <div style={{ fontSize: '5em', color: '#FFD700', fontWeight: 'bold' }}>
+                        {receiverTargetString[receiverCurrentIndex]}
+                      </div>
+                      <div style={{ display: 'flex', gap: '15px' }}>
+                        <button className="btn-hover" 
+                          onClick={() => setReceiverCurrentIndex(Math.max(0, receiverCurrentIndex - 1))} 
+                          disabled={receiverCurrentIndex === 0}
+                          style={{ padding: '10px 20px', fontSize: '1.5em', borderRadius: '10px', background: receiverCurrentIndex === 0 ? '#555' : '#17a2b8', color: 'white', border: 'none', cursor: receiverCurrentIndex === 0 ? 'not-allowed' : 'pointer' }}>
+                          ⬅️ 上一個
+                        </button>
+                        <button className="btn-hover" 
+                          onClick={() => setReceiverCurrentIndex(Math.min(receiverTargetString.length - 1, receiverCurrentIndex + 1))} 
+                          disabled={receiverCurrentIndex === receiverTargetString.length - 1}
+                          style={{ padding: '10px 20px', fontSize: '1.5em', borderRadius: '10px', background: receiverCurrentIndex === receiverTargetString.length - 1 ? '#555' : '#17a2b8', color: 'white', border: 'none', cursor: receiverCurrentIndex === receiverTargetString.length - 1 ? 'not-allowed' : 'pointer' }}>
+                          下一個 ➡️
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', gap: '20px', width: '80%', maxWidth: '800px', flexWrap: 'wrap', justifyContent: 'center' }}>
+                      {receiverOptions.map((opt, i) => (
+                        <button key={i} className="btn-hover" onClick={() => handleReceiverOptionClick(opt)} style={{ padding: '20px 40px', fontSize: '2.5em', fontWeight: 'bold', background: '#007bff', color: 'white', border: 'none', borderRadius: '15px', cursor: 'pointer', flex: '1 1 40%' }}>
+                          {opt}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
-              </div>
+              )
+            )}
+          </div>
+
+          <div style={{ height: '90px', display: 'flex', gap: '15px' }}>
+            <div style={{ flex: 1, background: '#1e1e1e', borderRadius: '10px', padding: '10px', border: '1px solid #333', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+              <span style={{ fontSize: '0.8em', color: '#666', flexShrink: 0 }}>當前信號 (Sequence)</span>
+              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '1.5em', fontWeight: 'bold', color: '#FFD700', letterSpacing: '5px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{detectionData?.sequence.join(' ') || '---'}</div>
             </div>
-          ) : <p>等待後端連線...</p>}
-        </div>
+            <div style={{ flex: 2, background: '#1e1e1e', borderRadius: '10px', padding: '10px', border: '1px solid #333', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+              <span style={{ fontSize: '0.8em', color: '#666', flexShrink: 0 }}>識別歷史 (History)</span>
+              <div style={{ flex: 1, display: 'flex', alignItems: 'center', fontSize: '1.1em', color: '#fff', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{detectionData?.word_history.join(' ') || '等待中...'}</div>
+            </div>
+          </div>
+        </main>
       </div>
+
+      {isDictionaryOpen && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.95)', zIndex: 1000, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+          <div style={{ width: '85%', height: '85%', background: '#222', borderRadius: '20px', padding: '35px', display: 'flex', flexDirection: 'column', border: '1px solid #444' }}>
+             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '25px', alignItems: 'center' }}>
+               <h2 style={{ color: '#FFD700', margin: 0 }}>📖 旗語字典</h2>
+               <button onClick={() => setIsDictionaryOpen(false)} style={{ background: '#dc3545', color: '#fff', border: 'none', borderRadius: '8px', padding: '8px 20px', cursor: 'pointer', fontWeight: 'bold' }}>關閉</button>
+             </div>
+             <input autoFocus placeholder="搜尋中文字、英文或序號..." value={dictionarySearch} onChange={e => setDictionarySearch(e.target.value)} style={{ width: '100%', padding: '15px', fontSize: '1.3em', borderRadius: '10px', border: 'none', color: '#000', backgroundColor: '#fff', marginBottom: '25px' }} />
+             <div style={{ flex: 1, overflowY: 'auto', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: '20px' }}>
+                {(() => {
+                  const searchUpper = dictionarySearch.toUpperCase();
+                  let filtered = Object.entries(mapping).filter(([char, seq]) => {
+                    if (!dictionarySearch) return /^[A-Z0-9#]$/i.test(char);
+                    return char.toUpperCase().includes(searchUpper) || 
+                           seq.includes(dictionarySearch) || 
+                           searchUpper.includes(char.toUpperCase());
+                  });
+                  
+                  if (!dictionarySearch) {
+                    filtered.sort((a, b) => {
+                      const isDigitA = /^\d$/.test(a[0]);
+                      const isDigitB = /^\d$/.test(b[0]);
+                      if (isDigitA && !isDigitB) return -1;
+                      if (!isDigitA && isDigitB) return 1;
+                      return a[0].localeCompare(b[0]);
+                    });
+                  } else if (searchUpper.length > 1 && isNaN(Number(dictionarySearch))) {
+                    filtered.sort((a, b) => {
+                      const idxA = searchUpper.indexOf(a[0].toUpperCase());
+                      const idxB = searchUpper.indexOf(b[0].toUpperCase());
+                      if (idxA !== -1 && idxB !== -1) return idxA - idxB;
+                      if (idxA !== -1) return -1;
+                      if (idxB !== -1) return 1;
+                      return 0;
+                    });
+                  }
+                  
+                  return filtered.slice(0, 100).map(([char, seq]) => (
+                    <div key={char} style={{ background: '#333', padding: '15px', borderRadius: '12px', textAlign: 'center', border: '1px solid #444' }}>
+                       <div style={{ fontSize: '2.5em', color: '#FFD700', fontWeight: 'bold' }}>{char}</div>
+                       <div style={{ fontSize: '1em', color: '#aaa', marginBottom: '5px' }}>{seq}</div>
+                       <div style={{ display: 'flex', justifyContent: 'center', gap: '2px', flexWrap: 'wrap' }}>
+                         {seq.split('').map((digit, idx) => (
+                           <img key={idx} src={`/digits/${encodeURIComponent(digit)}.png`} style={{ width: '30px', background: '#666', borderRadius: '4px', padding: '2px' }} alt={digit} />
+                         ))}
+                       </div>
+                    </div>
+                  ));
+                })()}
+             </div>
+          </div>
+        </div>
+      )}
+      {isInfoOpen && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.95)', zIndex: 1000, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+          <div style={{ width: '60%', maxHeight: '80%', background: '#222', borderRadius: '20px', padding: '35px', display: 'flex', flexDirection: 'column', border: '1px solid #444', overflowY: 'auto' }}>
+             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '25px', alignItems: 'center' }}>
+               <h2 style={{ color: '#FFD700', margin: 0 }}>ℹ️ 旗語簡介與操作說明</h2>
+               <button onClick={() => setIsInfoOpen(false)} style={{ background: '#dc3545', color: '#fff', border: 'none', borderRadius: '8px', padding: '8px 20px', cursor: 'pointer', fontWeight: 'bold' }}>關閉</button>
+             </div>
+             
+             <div style={{ lineHeight: '1.6', fontSize: '1.1em', color: '#ddd', textAlign: 'left' }}>
+               <h3 style={{ color: '#17a2b8', borderBottom: '1px solid #333', paddingBottom: '10px' }}>什麼是旗語 (Semaphore)?</h3>
+               <p style={{ textIndent: '2em' }}>
+                 旗語（Flag semaphore）是一種利用手旗或手臂的幾何位置來傳遞視覺信號的通訊系統。它起源於18世紀末的法國，最初由克勞德·查普（Claude Chappe）發明，利用建立在塔頂的機械臂進行長距離通訊。後來演變為我們熟知的手持旗幟版本，被廣泛應用於航海、軍事與童軍活動中。
+               </p>
+               <p style={{ textIndent: '2em' }}>
+                 旗語的優勢在於它不需要電力，只要在視線範圍內即可進行無聲且快速的通訊。國際海軍使用英文旗語（A-Z），而台灣童軍則發展出了一套基於數字（0-9）組合成中文電碼的獨特系統。
+               </p>
+
+               <h3 style={{ color: '#17a2b8', borderBottom: '1px solid #333', paddingBottom: '10px', marginTop: '30px' }}>系統使用說明</h3>
+               <p style={{ textIndent: '2em' }}>本系統分為兩個主要角色：</p>
+               <ul style={{ paddingLeft: '20px' }}>
+                 <li style={{ marginBottom: '10px' }}><strong>揮旗手 (Sender)：</strong> 站在攝影機前進行實際揮旗操作。系統會透過 AI 捕捉你的骨架與關節角度，判斷動作是否正確。<ul>
+                   <li><strong>自由練習：</strong> 隨意比劃，系統會告訴你現在打出的是什麼信號。</li>
+                   <li><strong>指定練習：</strong> 輸入你想要練習的字串，系統會引導你完成。</li>
+                   <li><strong>隨機測驗：</strong> 系統隨機出題，考驗你的記憶與動作準確度。</li>
+                 </ul></li>
+                 <li style={{ marginBottom: '10px' }}><strong>觀察員 (Receiver)：</strong> 學習如何「看懂」別人打的旗語。<ul>
+                   <li><strong>基礎教學：</strong> 像是字卡一樣，一步步學習每個基礎信號的長相。</li>
+                   <li><strong>測驗填字：</strong> 系統會播放旗語動作，你必須選出對應的字元。</li>
+                 </ul></li>
+               </ul>
+
+               <h3 style={{ color: '#17a2b8', borderBottom: '1px solid #333', paddingBottom: '10px', marginTop: '30px' }}>打旗語的小訣竅</h3>
+               <ul style={{ paddingLeft: '20px' }}>
+                 <li><strong>預備姿勢：</strong> 雙手自然下垂於大腿前方交叉。</li>
+                 <li><strong>動作俐落：</strong> 揮旗時手臂應盡量伸直，停頓要明確，讓接收者能看清。</li>
+                 <li><strong>角度精準：</strong> 旗語是透過兩手的角度差來辨識的（每個方位相隔約 45 度）。使用本系統時，可參考畫面左上角的關節角度提示來調整你的姿勢。</li>
+               </ul>
+             </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

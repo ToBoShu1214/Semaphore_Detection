@@ -16,7 +16,26 @@ import torch
 def get_resource_path(relative_path):
     if hasattr(sys, '_MEIPASS'):
         return os.path.join(sys._MEIPASS, relative_path)
-    return os.path.join(os.path.abspath("."), relative_path)
+    
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # 1. Try relative to the script directory (backend)
+    backend_path = os.path.join(script_dir, relative_path)
+    if os.path.exists(backend_path):
+        return backend_path
+        
+    # 2. Try relative to the current working directory
+    base_path = os.path.abspath(".")
+    cwd_path = os.path.join(base_path, relative_path)
+    if os.path.exists(cwd_path):
+        return cwd_path
+        
+    # 3. Try relative to the project root directory
+    root_path = os.path.abspath(os.path.join(script_dir, "..", relative_path))
+    if os.path.exists(root_path):
+        return root_path
+        
+    return os.path.join(base_path, relative_path)
 
 def create_video_capture(video_source_str):
     try:
@@ -214,6 +233,18 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                 challenge_type = c_payload.get("type", "standard")
                 is_in_challenge_mode, word_history, sequence, challenge_user_sequence, is_error_locked = True, [], [], [], False
                 session_state["navy_sub_mode"] = "ALPHA" # 重置模式為字母
+                
+                # 初始化考試統計
+                if challenge_type == "exam":
+                    total_sigs = 0
+                    for char in new_str:
+                        if current_system == 'navy':
+                            # Navy system simplified: each char/digit is one signal (except switching which we handle)
+                            total_sigs += 1
+                        else:
+                            total_sigs += len(reverse_mapping.get(char, []))
+                    session_state["exam_stats"] = {"total_signals": total_sigs, "correct_signals": 0}
+
                 invalid_char = next((c for c in new_str if c not in reverse_mapping and not c.isdigit()), None)
                 if not new_str: state, challenge_target_string, current_char_target_sequence = "CHALLENGE_AWAITING_INPUT", "", []
                 elif invalid_char: state, challenge_target_string, challenge_invalid_char = "CHALLENGE_INVALID_CHAR", new_str, invalid_char
@@ -346,8 +377,12 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                                         challenge_user_sequence.append(str(current_digit)); current_char_next_digit_index += 1
                                     else:
                                         challenge_user_sequence.append(str(current_digit)); cl = len(challenge_user_sequence)
-                                        if "".join(challenge_user_sequence) != "".join(current_char_target_sequence[:cl]): is_error_locked = True
-                                        else: current_char_next_digit_index = cl
+                                        if "".join(challenge_user_sequence) != "".join(current_char_target_sequence[:cl]): 
+                                            is_error_locked = True
+                                        else: 
+                                            current_char_next_digit_index = cl
+                                            if challenge_type == "exam":
+                                                session_state["exam_stats"]["correct_signals"] += 1
                                 
                                 # 判斷是否完成目前步驟 (包括切換模式後的重新導引)
                                 if (current_char_next_digit_index == len(current_char_target_sequence)) or is_switch_signal:
@@ -407,7 +442,11 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
             elif state == "IDLE": pc = "舉起雙手交叉啟動"
             elif state == "WAITING": pc = "雙手放下預備"
             elif state == "READY":
-                if is_in_challenge_mode and current_char_target_sequence: pc = f"請比出 {current_char_target_sequence[current_char_next_digit_index]}"
+                if is_in_challenge_mode and current_char_target_sequence: 
+                    if challenge_type == "exam":
+                        pc = "請比出下一個動作"
+                    else:
+                        pc = f"請比出 {current_char_target_sequence[current_char_next_digit_index]}"
                 else: pc = "準備就緒，開始比劃"
             elif state == "DETECTING": pc = f"偵測到 {current_digit}..." if current_digit else "偵測中..."
             elif state == "GRACE_PERIOD": pc = "判定中..."
@@ -421,7 +460,8 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                 "display_result": display_result, "target_person_bbox": last_known_target_person_bbox if target_person_id else None,
                 "flag_boxes": [], "mode": current_mode, "word_history": list(word_history),
                 "challenge_info": {"is_challenge_mode":bool(is_in_challenge_mode),"challenge_type":challenge_type,"target_string":challenge_target_string,"current_word_index":int(challenge_current_word_index),"current_char_target_sequence":current_char_target_sequence,"current_char_next_digit_index":int(current_char_next_digit_index),"is_error_locked":bool(is_error_locked)},
-                "correction_data": corr_info
+                "correction_data": corr_info,
+                "exam_stats": session_state.get("exam_stats")
             }
 
             if current_mode == 'practice' and not is_in_challenge_mode and len(sequence) == (1 if current_system == 'navy' else 4):
