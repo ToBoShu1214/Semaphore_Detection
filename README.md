@@ -1,4 +1,4 @@
-# 🚩 旗語辨識教學系統 (Semaphore Recognition & Teaching System)
+# 🚩 旗語教學系統 (Semaphore Teaching System)
 
 [![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
 [![React](https://img.shields.io/badge/React-18-61DAFB.svg)](https://reactjs.org/)
@@ -50,7 +50,7 @@
 ### 1. 直接運行 (正式版 APP)
 若您無需修改原始碼，建議直接下載預先封裝好的執行檔，**免安裝 Python 環境**：
 - **下載連結**：[👉 前往最新 Release 頁面](https://github.com/ToBoShu1214/Semaphore_Detection/releases/latest)
-- **說明**：下載所有分卷 (`.001`, `.002`) 後放置於同一目錄，使用 7-Zip 或 WinRAR 對第一個檔案解壓，雙擊執行 **`旗語辨識教學系統.exe`** 即可。
+- **說明**：下載所有分卷 (`.001`, `.002`) 後放置於同一目錄，使用 7-Zip 或 WinRAR 對第一個檔案解壓，雙擊執行 **`旗語教學系統.exe`** 即可。
 - **注意**：首次啟動時，系統載入 AI 模型需要約 5-15 秒（視電腦性能而定），介面跳出後即可開始使用。
 
 ### 2. 開發者環境配置

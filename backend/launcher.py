@@ -68,7 +68,7 @@ if __name__ == "__main__":
 
     # 3. 啟動使用者介面 (使用 localhost 載入網頁)
     window = webview.create_window(
-        '旗語辨識教學系統', 
+        '旗語教學系統', 
         'http://127.0.0.1:8000',
         width=1400,
         height=900,

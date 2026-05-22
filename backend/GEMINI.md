@@ -1,4 +1,4 @@
-# 🚩 旗語辨識教學系統 (Semaphore Recognition & Teaching System) - 開發紀錄文件
+# 🚩 旗語教學系統 (Semaphore Teaching System) - 開發紀錄文件
 
 本文件為本專案的開發紀錄，詳盡紀錄了系統架構、通訊協議、核心演算法邏輯、軟體產品化技術以及自 2025 年 9 月啟動至今的完整開發紀錄。
 

@@ -87,13 +87,23 @@ const VideoStream: React.FC = () => {
 
   const lastStateRef = useRef<string>('');
 
-  useEffect(() => {
+  const loadData = useCallback(() => {
     const baseUrl = `http://${window.location.hostname}:8000`;
     fetch(`${baseUrl}/api/questions`).then(res => res.json()).then(data => {
       setQuestions({ chinese: data.chinese || [], navy: data.navy || [] });
-    }).catch(console.error);
+    }).catch(err => {
+      console.error('Questions load error:', err);
+      // Optional: set a flag to show retry button
+    });
     fetch(`${baseUrl}/api/mapping`).then(res => res.json()).then(data => setMapping(data)).catch(console.error);
   }, []);
+
+  useEffect(() => {
+    loadData();
+    // 增加一個延遲重試，防止後端啟動較慢時抓不到資料
+    const timer = setTimeout(loadData, 2000);
+    return () => clearTimeout(timer);
+  }, [loadData]);
 
   const sendMessage = useCallback((command: string, payload?: any) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -253,7 +263,7 @@ const VideoStream: React.FC = () => {
 
       <header style={{ height: '60px', backgroundColor: '#1e1e1e', borderBottom: '1px solid #333', display: 'flex', alignItems: 'center', padding: '0 20px', justifyContent: 'space-between', flexShrink: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
-          <h1 style={{ margin: 0, fontSize: '1.4em', color: '#fff' }}>🚩 旗語訓練系統</h1>
+          <h1 style={{ margin: 0, fontSize: '1.4em', color: '#fff' }}>🚩 旗語教學系統</h1>
           <div style={{ display: 'flex', backgroundColor: '#2d2d2d', borderRadius: '6px', overflow: 'hidden' }}>
             <button className={`btn-hover ${system === 'chinese' ? 'sys-active' : ''}`} onClick={() => setSystem('chinese')} style={{ padding: '6px 15px', background: 'transparent', border: 'none', color: '#aaa', cursor: 'pointer' }}>童軍 (中文)</button>
             <button className={`btn-hover ${system === 'navy' ? 'sys-active' : ''}`} onClick={() => setSystem('navy')} style={{ padding: '6px 15px', background: 'transparent', border: 'none', color: '#aaa', cursor: 'pointer', borderLeft: '1px solid #444' }}>海軍 (英文)</button>
@@ -282,16 +292,16 @@ const VideoStream: React.FC = () => {
             {role === 'sender' ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
                 <div style={{ background: '#252525', padding: '10px', borderRadius: '6px', border: '1px solid #333' }}>
-                  <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#007bff' }}>1. 自由練習 (無限制)</div>
+                  <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#007bff', lineHeight: '1.2' }}>1. 自由練習 <span style={{ fontSize: '0.85em', fontWeight: 'normal', display: 'block', opacity: 0.8 }}>(無限制)</span></div>
                   <button className="btn-hover" onClick={() => { setSenderMode('free'); sendMessage('set_challenge_mode', { enabled: false }); }} style={{ width: '100%', padding: '10px', background: senderMode === 'free' ? '#007bff' : '#444', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>開始自由練習</button>
                 </div>
                 <div style={{ background: '#252525', padding: '10px', borderRadius: '6px', border: '1px solid #333' }}>
-                  <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#ccc' }}>2. 指定練習 (有提示)</div>
+                  <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#ccc', lineHeight: '1.2' }}>2. 指定練習 <span style={{ fontSize: '0.85em', fontWeight: 'normal', display: 'block', opacity: 0.8 }}>(有提示)</span></div>
                   <input type="text" value={customPracticeString} onChange={e => setCustomPracticeString(system === 'navy' ? e.target.value.toUpperCase() : e.target.value)} placeholder="輸入字串..." style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid #555', background: '#111', color: 'white', marginBottom: '8px', boxSizing: 'border-box' }} />
                   <button className="btn-hover" onClick={() => { setSenderMode('practice'); sendMessage('set_challenge_mode', { enabled: true, chars: customPracticeString, type: 'teaching' }); }} style={{ width: '100%', padding: '8px', background: '#17a2b8', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>開始指定練習</button>
                 </div>
                 <div style={{ background: '#252525', padding: '10px', borderRadius: '6px', border: '1px solid #333' }}>
-                  <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#dc3545' }}>3. 隨機測驗 (無提示)</div>
+                  <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#dc3545', lineHeight: '1.2' }}>3. 隨機測驗 <span style={{ fontSize: '0.85em', fontWeight: 'normal', display: 'block', opacity: 0.8 }}>(無提示)</span></div>
                   <button className="btn-hover" onClick={startSenderExam} style={{ width: '100%', padding: '10px', background: '#dc3545', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>開始抽考</button>
                   {senderMode === 'exam' && detectionData?.exam_stats && (
                     <div style={{ marginTop: '10px', padding: '10px', background: '#111', borderRadius: '4px', fontSize: '0.9em' }}>
@@ -303,11 +313,11 @@ const VideoStream: React.FC = () => {
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
                 <div style={{ background: '#252525', padding: '10px', borderRadius: '6px', border: '1px solid #333' }}>
-                  <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#17a2b8' }}>1. 基礎教學 (循序)</div>
+                  <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#17a2b8', lineHeight: '1.2' }}>1. 基礎教學 <span style={{ fontSize: '0.85em', fontWeight: 'normal', display: 'block', opacity: 0.8 }}>(循序)</span></div>
                   <button className="btn-hover" onClick={() => startReceiver('learning')} style={{ width: '100%', padding: '10px', background: '#17a2b8', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>開始教學認字</button>
                 </div>
                 <div style={{ background: '#252525', padding: '10px', borderRadius: '6px', border: '1px solid #333' }}>
-                  <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#dc3545' }}>2. 隨機測驗 (選擇題)</div>
+                  <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#dc3545', lineHeight: '1.2' }}>2. 隨機測驗 <span style={{ fontSize: '0.85em', fontWeight: 'normal', display: 'block', opacity: 0.8 }}>(選擇題)</span></div>
                   <button className="btn-hover" onClick={() => startReceiver('exam')} style={{ width: '100%', padding: '10px', background: '#dc3545', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>開始測驗填字</button>
                 </div>
               </div>
