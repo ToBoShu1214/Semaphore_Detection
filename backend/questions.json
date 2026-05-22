@@ -1,23 +1,39 @@
 {
   "chinese": [
-    "中華民國",
-    "海軍旗語",
-    "精進技能",
-    "保家衛國",
-    "平安順利",
-    "演習開始",
-    "請求支援",
-    "收到訊息"
+    "緊急求救",
+    "注意",
+    "集合",
+    "解散",
+    "前進",
+    "撤退",
+    "請求通訊",
+    "發送完畢",
+    "收到",
+    "隱蔽",
+    "搜索",
+    "方位",
+    "左右",
+    "榮譽",
+    "開會"
   ],
-  "english": [
-    "HELLO",
-    "NAVY",
-    "SIGNAL",
-    "READY",
-    "DANGER",
+  "navy": [
+    "SOS",
     "HELP",
+    "STOP",
+    "GO",
+    "READY",
+    "STANDBY",
+    "ROGER",
+    "WAIT",
+    "YES",
+    "NO",
+    "ATTENTION",
+    "MESSAGE",
+    "DANGER",
     "RESCUE",
-    "SUCCESS",
-    "FLAG"
+    "ABORT",
+    "POSITION",
+    "OVER",
+    "FINISH"
   ]
 }
