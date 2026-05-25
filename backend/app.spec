@@ -6,6 +6,7 @@ added_files = [
     ('yolo11s-pose.pt', '.'),
     ('flag.pt', '.'),
     ('mapping.csv', '.'),
+    ('questions.json', '.'),
     ('config.json', '.'),
     ('msjh.ttc', '.'),
     ('app.ico', '.'),

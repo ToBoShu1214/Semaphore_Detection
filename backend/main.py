@@ -48,19 +48,25 @@ def get_resource_path(relative_path):
 @app.get("/api/questions")
 async def get_questions():
     path = get_resource_path("questions.json")
+    print(f"[DEBUG] Fetching questions from: {path}")
     if os.path.exists(path):
-        with open(path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            # 強制轉換 key 名稱以匹配前端
-            return {
-                "chinese": data.get("chinese", []),
-                "navy": data.get("english", []) 
-            }
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return {
+                    "chinese": data.get("chinese", []),
+                    "navy": data.get("navy", []) 
+                }
+        except Exception as e:
+            print(f"[ERROR] Failed to read questions.json: {e}")
+    else:
+        print(f"[ERROR] questions.json NOT FOUND at {path}")
     return {"chinese": [], "navy": []}
 
 @app.get("/api/mapping")
 async def get_mapping():
     path = get_resource_path("mapping.csv")
+    print(f"[DEBUG] Fetching mapping from: {path}")
     full_map = {}
     # 1. 載入中文映射
     if os.path.exists(path):
@@ -70,8 +76,8 @@ async def get_mapping():
     
     # 2. 注入英數映射 (對應 yolo_logic.py 中的定義)
     navy_defaults = {
-        'A':'1','B':'2','C':'3','D':'4','E':'5','F':'6','G':'7','H':'8','I':'9','J':'0',
-        'K':'K','L':'L','M':'M','N':'N','O':'O','P':'P','Q':'Q','R':'R','S':'S','T':'T',
+        'A':'1','B':'2','C':'3','D':'4','E':'5','F':'6','G':'7','H':'8','I':'9','K':'0',
+        'J':'J','L':'L','M':'M','N':'N','O':'O','P':'P','Q':'Q','R':'R','S':'S','T':'T',
         'U':'U','V':'V','W':'W','X':'X','Y':'Y','Z':'Z',
         '0':'0','1':'1','2':'2','3':'3','4':'4','5':'5','6':'6','7':'7','8':'8','9':'9','#':'#'
     }
@@ -141,7 +147,6 @@ async def websocket_endpoint(websocket: WebSocket):
                     state["session"]["challenge_payload"] = {"type": p.get("type", "standard")}
                 else:
                     state["session"]["stop_challenge_mode"] = True
-                await start_stream()
             elif cmd["command"] == "set_flag_requirement":
                 state["is_flag"] = p.get("required", True)
                 await start_stream()

@@ -1,4 +1,4 @@
-# 🚩 旗語辨識教學系統 (Semaphore Recognition & Teaching System)
+# 🚩 旗語辨識教學系統 (Semaphore Teaching & Recognition System)
 
 [![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
 [![React](https://img.shields.io/badge/React-18-61DAFB.svg)](https://reactjs.org/)

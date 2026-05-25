@@ -12,9 +12,15 @@
     "隱蔽",
     "搜索",
     "方位",
-    "左右",
-    "榮譽",
-    "開會"
+    "左",
+    "右",
+    "前",
+    "後",
+    "開會",
+    "東",
+    "西",
+    "南",
+    "北"
   ],
   "navy": [
     "SOS",
@@ -34,6 +40,14 @@
     "ABORT",
     "POSITION",
     "OVER",
-    "FINISH"
+    "FINISH",
+    "NORTH",
+    "SOUTH",
+    "EAST",
+    "WEST",
+    "LEFT",
+    "RIGHT",
+    "FRONT",
+    "BACK"
   ]
 }

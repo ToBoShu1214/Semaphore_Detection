@@ -180,7 +180,8 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
     def is_hands_above_head(kpts):
         if kpts is None or len(kpts)<11: return False
         nose_y, l_w_y, r_w_y = kpts[0][1], kpts[9][1], kpts[10][1]
-        return bool(all(y > 0 for y in [nose_y, l_w_y, r_w_y]) and l_w_y < nose_y and r_w_y < nose_y)
+        # 加嚴判斷：手腕必須明顯高於鼻子 (y 軸數值越小越高)
+        return bool(all(y > 0 for y in [nose_y, l_w_y, r_w_y]) and l_w_y < (nose_y - 20) and r_w_y < (nose_y - 20))
 
     # 載入權重並移至設備 (開啟 FP16 加速)
     try:
@@ -234,18 +235,14 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                 is_in_challenge_mode, word_history, sequence, challenge_user_sequence, is_error_locked = True, [], [], [], False
                 session_state["navy_sub_mode"] = "ALPHA" # 重置模式為字母
                 
+                target_person_id = None
+                target_lost_start_time = 0.0
+                
                 # 初始化考試統計
                 if challenge_type == "exam":
-                    total_sigs = 0
-                    for char in new_str:
-                        if current_system == 'navy':
-                            # Navy system simplified: each char/digit is one signal (except switching which we handle)
-                            total_sigs += 1
-                        else:
-                            total_sigs += len(reverse_mapping.get(char, []))
-                    session_state["exam_stats"] = {"total_signals": total_sigs, "correct_signals": 0}
+                    session_state["exam_stats"] = {"total_signals": 0, "correct_signals": 0}
 
-                invalid_char = next((c for c in new_str if c not in reverse_mapping and not c.isdigit()), None)
+                invalid_char = next((c for c in new_str if c not in reverse_mapping and not c.isdigit() and c != ','), None)
                 if not new_str: state, challenge_target_string, current_char_target_sequence = "CHALLENGE_AWAITING_INPUT", "", []
                 elif invalid_char: state, challenge_target_string, challenge_invalid_char = "CHALLENGE_INVALID_CHAR", new_str, invalid_char
                 else:
@@ -294,7 +291,16 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
             target_kpts = all_person_kpts.get(target_person_id) if target_person_id else None
             if target_person_id and target_kpts is None:
                 if target_lost_start_time == 0.0: target_lost_start_time = current_time
-                if (current_time - target_lost_start_time) > TARGET_LOST_TIMEOUT: target_person_id, state = None, "IDLE"
+                if (current_time - target_lost_start_time) > TARGET_LOST_TIMEOUT:
+                    target_person_id, state = None, "IDLE"
+                    target_lost_start_time = 0.0 # 關鍵修復：觸發超時後必須歸零，避免下次一閃爍就秒殺
+                    # 若在測驗中遺失目標，強制終止測驗，防止換人數據累加
+                    if is_in_challenge_mode:
+                        is_in_challenge_mode = False
+                        challenge_target_string, current_char_target_sequence, challenge_user_sequence, word_history = "", [], [], []
+                        is_error_locked = False
+                        if session_state and "exam_stats" in session_state:
+                            del session_state["exam_stats"]
             elif target_kpts is not None:
                 target_lost_start_time = 0.0
                 try:
@@ -325,12 +331,15 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                         sequence.clear(); word_history.clear(); challenge_user_sequence.clear(); current_digit, display_result, is_error_locked = None, None, False
                         if is_in_challenge_mode and state == "WAITING":
                             challenge_current_word_index = 0
-                            first_char = challenge_target_string[0]
+                            first_char = challenge_target_string[0] if len(challenge_target_string) > 0 else ""
                             if current_system == 'navy' and first_char.isdigit():
                                 current_char_target_sequence = ['#']
                             else:
                                 current_char_target_sequence = list(reverse_mapping.get(first_char, []))
                             current_char_next_digit_index = 0
+                            if challenge_type == "exam" and "exam_stats" in session_state:
+                                session_state["exam_stats"]["correct_signals"] = 0
+                                session_state["exam_stats"]["has_errored_on_current_signal"] = False
                     elif h_up and not gesture_complete:
                         if time.time() - last_gesture_time > GESTURE_TIMEOUT: cross_count, cross_sub_state = 0, "UNCROSSED"
                         is_c = abs(target_kpts[9][0] - target_kpts[10][0]) < GESTURE_WRIST_DISTANCE_THRESHOLD
@@ -377,18 +386,27 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                                         challenge_user_sequence.append(str(current_digit)); current_char_next_digit_index += 1
                                     else:
                                         challenge_user_sequence.append(str(current_digit)); cl = len(challenge_user_sequence)
+                                        
+                                        if challenge_type == "exam" and "exam_stats" in session_state:
+                                            session_state["exam_stats"]["total_signals"] += 1
+                                            
                                         if "".join(challenge_user_sequence) != "".join(current_char_target_sequence[:cl]): 
                                             is_error_locked = True
                                         else: 
                                             current_char_next_digit_index = cl
-                                            if challenge_type == "exam":
+                                            if challenge_type == "exam" and "exam_stats" in session_state:
                                                 session_state["exam_stats"]["correct_signals"] += 1
                                 
-                                # 判斷是否完成目前步驟 (包括切換模式後的重新導引)
+                                # 判斷是否完成目前步驟
                                 if (current_char_next_digit_index == len(current_char_target_sequence)) or is_switch_signal:
                                     if not is_switch_signal and (current_char_next_digit_index == len(current_char_target_sequence)):
                                         word_history.append(challenge_target_string[challenge_current_word_index]); challenge_current_word_index += 1
-                                    
+                                        
+                                        # 跳過分隔符號
+                                        while challenge_current_word_index < len(challenge_target_string) and challenge_target_string[challenge_current_word_index] == ',':
+                                            word_history.append(',')
+                                            challenge_current_word_index += 1
+                                            
                                     challenge_user_sequence, current_char_next_digit_index = [], 0
                                     if challenge_current_word_index >= len(challenge_target_string):
                                         nx_s = "CHALLENGE_AWAITING_GESTURE"; current_char_target_sequence = []
@@ -412,9 +430,15 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                         elif time.time() - state_timer > STRAIGHTEN_GRACE_PERIOD: state, current_digit = "READY", None
                         elif time.time() - state_timer > STRAIGHTEN_GRACE_PERIOD: state, current_digit = "READY", None
                 elif state in ["COOLDOWN", "CHALLENGE_AWAITING_GESTURE"] and is_ready_pose(angs['left_angle'], angs['right_angle']): state, current_digit = ("READY" if state == "COOLDOWN" else "CHALLENGE_READY_TO_END"), None
-                elif state == "CHALLENGE_COMPLETE_PROMPT" and time.time() - state_timer > 2.0: state = "CHALLENGE_AWAITING_INPUT"
+                elif state == "CHALLENGE_COMPLETE_PROMPT" and time.time() - state_timer > 2.0:
+                    if challenge_type == "exam":
+                        state = "IDLE"
+                        is_in_challenge_mode = False
+                        if "exam_stats" in session_state: del session_state["exam_stats"]
+                    else:
+                        state = "CHALLENGE_AWAITING_INPUT"
 
-            # --- 最終傳送資料打包 ---
+                # --- 畫面提示文字 (Prompt) ---
             corr_info = {"target_signal":None,"target_l_angle":None,"target_r_angle":None,"l_angle_diff":None,"r_angle_diff":None,"l_angle_ok":False,"r_angle_ok":False,"l_arm_straight_ok":False,"r_arm_straight_ok":False,"l_advice":"-","r_advice":"-","is_correct":False}
             if angs and is_in_challenge_mode and challenge_type == "teaching" and current_char_target_sequence and state in ["READY", "DETECTING", "GRACE_PERIOD"] and (angs['left_angle'] > 30 or angs['right_angle'] > 30):
                 eff_t = current_char_target_sequence[current_char_next_digit_index]
@@ -439,7 +463,11 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                     la, ra = corr_info["l_advice"], corr_info["r_advice"]
                     pc = f"左{la}, 右{ra}" if la!="OK" and ra!="OK" else (f"左{la}" if la!="OK" else f"右{ra}")
             elif is_error_locked: pc = "輸入錯誤！請雙手放下" if not is_ready_pose(angs.get('left_angle',0), angs.get('right_angle',0)) else "請比出 [取消] 手勢"
-            elif state == "IDLE": pc = "舉起雙手交叉啟動"
+            elif state == "IDLE":
+                if is_in_challenge_mode:
+                    pc = "請舉起雙手交叉以開始測驗"
+                else:
+                    pc = "請從左側選擇模式，或交叉雙手自由練習"
             elif state == "WAITING": pc = "雙手放下預備"
             elif state == "READY":
                 if is_in_challenge_mode and current_char_target_sequence: 
@@ -483,3 +511,4 @@ if __name__ == '__main__':
     parser.add_argument('--flag_model_path', type=str, default='flag.pt'); parser.add_argument('--mapping_csv', type=str, default='mapping.csv')
     args = parser.parse_args()
     for f, d in run_detection(video_source_str=args.video_source, model_path=args.model_path, flag_model_path=args.flag_model_path, mapping_csv_path=args.mapping_csv): pass
+el_path, flag_model_path=args.flag_model_path, mapping_csv_path=args.mapping_csv): pass

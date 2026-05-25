@@ -76,6 +76,9 @@ const VideoStream: React.FC = () => {
   const [receiverFeedback, setReceiverFeedback] = useState<{ text: string, type: 'success' | 'error' | 'neutral' } | null>(null);
   const [isReceiverActive, setIsReceiverActive] = useState(false);
   const [receiverOptions, setReceiverOptions] = useState<string[]>([]);
+  const [receiverCorrectCount, setReceiverCorrectCount] = useState(0);
+  const [receiverTotalAttempts, setReceiverTotalAttempts] = useState(0);
+  const [receiverHasErrored, setReceiverHasErrored] = useState(false);
 
   const [isFlagRequired, setIsFlagRequired] = useState<boolean>(true);
   const [isMirrored, setIsMirrored] = useState(true);
@@ -86,14 +89,24 @@ const VideoStream: React.FC = () => {
   const [resultOverlay, setResultOverlay] = useState<string | null>(null);
 
   const lastStateRef = useRef<string>('');
+  const lastErrorLockRef = useRef<boolean>(false);
+
+  const loadData = useCallback(() => {
+    // 使用相對路徑，增加相容性與減少硬編碼 port 的風險
+    fetch(`/api/questions`).then(res => res.json()).then(data => {
+      setQuestions({ chinese: data.chinese || [], navy: data.navy || [] });
+    }).catch(err => {
+      console.error('Questions load error:', err);
+    });
+    fetch(`/api/mapping`).then(res => res.json()).then(data => setMapping(data)).catch(console.error);
+  }, []);
 
   useEffect(() => {
-    const baseUrl = `http://${window.location.hostname}:8000`;
-    fetch(`${baseUrl}/api/questions`).then(res => res.json()).then(data => {
-      setQuestions({ chinese: data.chinese || [], navy: data.navy || [] });
-    }).catch(console.error);
-    fetch(`${baseUrl}/api/mapping`).then(res => res.json()).then(data => setMapping(data)).catch(console.error);
-  }, []);
+    loadData();
+    // 增加一個延遲重試，防止後端啟動較慢時抓不到資料
+    const timer = setTimeout(loadData, 2000);
+    return () => clearTimeout(timer);
+  }, [loadData]);
 
   const sendMessage = useCallback((command: string, payload?: any) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -119,19 +132,29 @@ const VideoStream: React.FC = () => {
         const data: DetectionData = payload.data;
         setDetectionData(data);
         if (isAudioEnabled) {
+          // 狀態變更時的音效處理
           if (data.state !== lastStateRef.current) {
             if (data.state === 'CHALLENGE_COMPLETE_PROMPT') {
               audioRefs.success.current.play().catch(()=>{});
               setResultOverlay(data.word_history.join(''));
               setTimeout(() => setResultOverlay(null), 2500);
             } else if (data.state === 'COOLDOWN' || data.state === 'CHALLENGE_AWAITING_GESTURE') {
-              audioRefs.correct.current.play().catch(()=>{});
-            } else if (data.challenge_info?.is_error_locked) {
-              audioRefs.incorrect.current.play().catch(()=>{});
+              if (!data.challenge_info?.is_error_locked) {
+                audioRefs.correct.current.play().catch(()=>{});
+              }
             }
+          }
+          // 錯誤鎖定狀態變更時的音效處理 (防止重複播放)
+          if (data.challenge_info?.is_error_locked && !lastErrorLockRef.current) {
+             audioRefs.incorrect.current.play().catch(()=>{});
+          } else if (!data.challenge_info?.is_error_locked && lastErrorLockRef.current && data.current_digit === 'cancel') {
+             // 解除鎖定時播正確音效
+             audioRefs.correct.current.play().catch(()=>{});
           }
         }
         lastStateRef.current = data.state;
+        lastErrorLockRef.current = data.challenge_info?.is_error_locked || false;
+
       }
     };
     return () => ws.close();
@@ -140,9 +163,13 @@ const VideoStream: React.FC = () => {
   const startSenderExam = () => {
     const bank = questions[system];
     if (bank && bank.length > 0) {
-      const word = bank[Math.floor(Math.random() * bank.length)];
+      let testStr = "";
+      for (let i = 0; i < 5; i++) {
+        testStr += bank[Math.floor(Math.random() * bank.length)];
+        if (i < 4) testStr += ",";
+      }
       setSenderMode('exam');
-      sendMessage('set_challenge_mode', { enabled: true, chars: word, type: 'exam' });
+      sendMessage('set_challenge_mode', { enabled: true, chars: testStr, type: 'exam' });
     } else alert("題庫載入中...");
   };
 
@@ -153,11 +180,16 @@ const VideoStream: React.FC = () => {
     } else {
       chars = Object.keys(mapping).filter(k => k.length === 1 && !/^[A-Z0-9#]$/i.test(k));
     }
+    
+    const correctSeq = mapping[correctChar] || correctChar;
+    // 過濾掉所有與正確答案「動作完全一樣」的其他字元 (例如 D 與 4)
+    const validChars = chars.filter(c => c === correctChar || (mapping[c] || c) !== correctSeq);
+
     const options = new Set<string>();
     options.add(correctChar);
     let attempts = 0;
     while(options.size < 4 && attempts < 100) {
-      if (chars.length > 0) options.add(chars[Math.floor(Math.random() * chars.length)]);
+      if (validChars.length > 0) options.add(validChars[Math.floor(Math.random() * validChars.length)]);
       attempts++;
     }
     return Array.from(options).sort(() => Math.random() - 0.5);
@@ -174,28 +206,44 @@ const VideoStream: React.FC = () => {
     } else {
       const bank = questions[system];
       if (bank && bank.length > 0) {
-        const word = bank[Math.floor(Math.random() * bank.length)];
-        setReceiverTargetString(word);
+        const shuffled = [...bank].sort(() => 0.5 - Math.random());
+        const selected = shuffled.slice(0, Math.min(5, shuffled.length));
+        const testStr = selected.join('');
+        setReceiverTargetString(testStr);
         setReceiverCurrentIndex(0);
         setReceiverMode(mode);
         setIsReceiverActive(true);
         setReceiverFeedback(null);
-        setReceiverOptions(generateOptions(word[0]));
+        setReceiverOptions(generateOptions(testStr[0]));
+        setReceiverCorrectCount(0);
+        setReceiverTotalAttempts(0);
+        setReceiverHasErrored(false);
       } else alert("題庫載入中...");
     }
   };
 
   const handleReceiverOptionClick = (opt: string) => {
     if (receiverFeedback?.type === 'success') return;
+    
+    if (receiverMode === 'exam') {
+       setReceiverTotalAttempts(prev => prev + 1);
+    }
+    
     const correctChar = receiverTargetString[receiverCurrentIndex];
     if (opt === correctChar) {
       setReceiverFeedback({ text: '正確！', type: 'success' });
       if (isAudioEnabled) audioRefs.ok.current.play().catch(()=>{});
+      
+      if (receiverMode === 'exam' && !receiverHasErrored) {
+          setReceiverCorrectCount(prev => prev + 1);
+      }
+      
       setTimeout(() => {
         const nextIdx = receiverCurrentIndex + 1;
         if (nextIdx < receiverTargetString.length) {
           setReceiverCurrentIndex(nextIdx);
           setReceiverFeedback(null);
+          setReceiverHasErrored(false);
           if (receiverMode === 'exam') setReceiverOptions(generateOptions(receiverTargetString[nextIdx]));
         } else {
           setResultOverlay("測驗完成！");
@@ -208,6 +256,7 @@ const VideoStream: React.FC = () => {
       }, 1000);
     } else {
       setReceiverFeedback({ text: '錯誤！', type: 'error' });
+      if (receiverMode === 'exam') setReceiverHasErrored(true);
       if (isAudioEnabled) audioRefs.incorrect.current.play().catch(()=>{});
     }
   };
@@ -222,11 +271,16 @@ const VideoStream: React.FC = () => {
       } else {
         const bank = questions[system];
         if (bank && bank.length > 0) {
-          const word = bank[Math.floor(Math.random() * bank.length)];
-          setReceiverTargetString(word);
+          const shuffled = [...bank].sort(() => 0.5 - Math.random());
+          const selected = shuffled.slice(0, Math.min(5, shuffled.length));
+          const testStr = selected.join('');
+          
+          setReceiverTargetString(testStr);
           setReceiverCurrentIndex(0);
           setReceiverFeedback(null);
-          setReceiverOptions(generateOptions(word[0]));
+          setReceiverOptions(generateOptions(testStr[0]));
+          setReceiverCorrectCount(0);
+          setReceiverHasErrored(false);
         }
       }
     }
@@ -253,7 +307,7 @@ const VideoStream: React.FC = () => {
 
       <header style={{ height: '60px', backgroundColor: '#1e1e1e', borderBottom: '1px solid #333', display: 'flex', alignItems: 'center', padding: '0 20px', justifyContent: 'space-between', flexShrink: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
-          <h1 style={{ margin: 0, fontSize: '1.4em', color: '#fff' }}>🚩 旗語訓練系統</h1>
+          <h1 style={{ margin: 0, fontSize: '1.4em', color: '#fff' }}>🚩 旗語辨識教學系統</h1>
           <div style={{ display: 'flex', backgroundColor: '#2d2d2d', borderRadius: '6px', overflow: 'hidden' }}>
             <button className={`btn-hover ${system === 'chinese' ? 'sys-active' : ''}`} onClick={() => setSystem('chinese')} style={{ padding: '6px 15px', background: 'transparent', border: 'none', color: '#aaa', cursor: 'pointer' }}>童軍 (中文)</button>
             <button className={`btn-hover ${system === 'navy' ? 'sys-active' : ''}`} onClick={() => setSystem('navy')} style={{ padding: '6px 15px', background: 'transparent', border: 'none', color: '#aaa', cursor: 'pointer', borderLeft: '1px solid #444' }}>海軍 (英文)</button>
@@ -282,17 +336,17 @@ const VideoStream: React.FC = () => {
             {role === 'sender' ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
                 <div style={{ background: '#252525', padding: '10px', borderRadius: '6px', border: '1px solid #333' }}>
-                  <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#007bff' }}>1. 自由練習 (無限制)</div>
-                  <button className="btn-hover" onClick={() => { setSenderMode('free'); sendMessage('set_challenge_mode', { enabled: false }); }} style={{ width: '100%', padding: '10px', background: senderMode === 'free' ? '#007bff' : '#444', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>開始自由練習</button>
+                  <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#007bff', lineHeight: '1.2' }}>1. 自由練習 <span style={{ fontSize: '0.85em', fontWeight: 'normal', display: 'block', opacity: 0.8 }}>(無限制)</span></div>
+                  <button className="btn-hover" onClick={() => { setSenderMode('free'); sendMessage('set_challenge_mode', { enabled: false }); }} style={{ width: '100%', padding: '10px', background: senderMode === 'free' && !detectionData?.challenge_info?.is_challenge_mode && detectionData?.state !== 'IDLE' ? '#007bff' : '#444', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>開始自由練習</button>
                 </div>
                 <div style={{ background: '#252525', padding: '10px', borderRadius: '6px', border: '1px solid #333' }}>
-                  <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#ccc' }}>2. 指定練習 (有提示)</div>
+                  <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#ccc', lineHeight: '1.2' }}>2. 指定練習 <span style={{ fontSize: '0.85em', fontWeight: 'normal', display: 'block', opacity: 0.8 }}>(有提示)</span></div>
                   <input type="text" value={customPracticeString} onChange={e => setCustomPracticeString(system === 'navy' ? e.target.value.toUpperCase() : e.target.value)} placeholder="輸入字串..." style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid #555', background: '#111', color: 'white', marginBottom: '8px', boxSizing: 'border-box' }} />
-                  <button className="btn-hover" onClick={() => { setSenderMode('practice'); sendMessage('set_challenge_mode', { enabled: true, chars: customPracticeString, type: 'teaching' }); }} style={{ width: '100%', padding: '8px', background: '#17a2b8', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>開始指定練習</button>
+                  <button className="btn-hover" onClick={() => { setSenderMode('practice'); sendMessage('set_challenge_mode', { enabled: true, chars: customPracticeString, type: 'teaching' }); }} style={{ width: '100%', padding: '8px', background: senderMode === 'practice' && detectionData?.challenge_info?.is_challenge_mode ? '#17a2b8' : '#444', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>開始指定練習</button>
                 </div>
                 <div style={{ background: '#252525', padding: '10px', borderRadius: '6px', border: '1px solid #333' }}>
-                  <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#dc3545' }}>3. 隨機測驗 (無提示)</div>
-                  <button className="btn-hover" onClick={startSenderExam} style={{ width: '100%', padding: '10px', background: '#dc3545', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>開始抽考</button>
+                  <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#dc3545', lineHeight: '1.2' }}>3. 隨機測驗 <span style={{ fontSize: '0.85em', fontWeight: 'normal', display: 'block', opacity: 0.8 }}>(無提示)</span></div>
+                  <button className="btn-hover" onClick={startSenderExam} style={{ width: '100%', padding: '10px', background: senderMode === 'exam' && detectionData?.challenge_info?.is_challenge_mode ? '#dc3545' : '#444', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>開始抽考</button>
                   {senderMode === 'exam' && detectionData?.exam_stats && (
                     <div style={{ marginTop: '10px', padding: '10px', background: '#111', borderRadius: '4px', fontSize: '0.9em' }}>
                       正確率: {((detectionData.exam_stats.correct_signals / (detectionData.exam_stats.total_signals || 1)) * 100).toFixed(1)}%
@@ -303,12 +357,17 @@ const VideoStream: React.FC = () => {
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
                 <div style={{ background: '#252525', padding: '10px', borderRadius: '6px', border: '1px solid #333' }}>
-                  <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#17a2b8' }}>1. 基礎教學 (循序)</div>
-                  <button className="btn-hover" onClick={() => startReceiver('learning')} style={{ width: '100%', padding: '10px', background: '#17a2b8', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>開始教學認字</button>
+                  <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#17a2b8', lineHeight: '1.2' }}>1. 基礎教學 <span style={{ fontSize: '0.85em', fontWeight: 'normal', display: 'block', opacity: 0.8 }}>(循序)</span></div>
+                  <button className="btn-hover" onClick={() => startReceiver('learning')} style={{ width: '100%', padding: '10px', background: isReceiverActive && receiverMode === 'learning' ? '#17a2b8' : '#444', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>開始教學認字</button>
                 </div>
                 <div style={{ background: '#252525', padding: '10px', borderRadius: '6px', border: '1px solid #333' }}>
-                  <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#dc3545' }}>2. 隨機測驗 (選擇題)</div>
-                  <button className="btn-hover" onClick={() => startReceiver('exam')} style={{ width: '100%', padding: '10px', background: '#dc3545', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>開始測驗填字</button>
+                  <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#dc3545', lineHeight: '1.2' }}>2. 隨機測驗 <span style={{ fontSize: '0.85em', fontWeight: 'normal', display: 'block', opacity: 0.8 }}>(選擇題)</span></div>
+                  <button className="btn-hover" onClick={() => startReceiver('exam')} style={{ width: '100%', padding: '10px', background: isReceiverActive && receiverMode === 'exam' ? '#dc3545' : '#444', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>開始測驗填字</button>
+                  {receiverMode === 'exam' && receiverTotalAttempts > 0 && (
+                    <div style={{ marginTop: '10px', padding: '10px', background: '#111', borderRadius: '4px', fontSize: '0.9em' }}>
+                      正確率: {((receiverCorrectCount / receiverTotalAttempts) * 100).toFixed(1)}%
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -318,16 +377,65 @@ const VideoStream: React.FC = () => {
         <main style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '15px', minWidth: 0 }}>
           <div style={{ height: '85px', backgroundColor: '#1e1e1e', borderRadius: '10px', border: '1px solid #333', display: 'flex', alignItems: 'center', padding: '0 25px', justifyContent: 'space-between' }}>
             <div style={{ fontSize: '1.6em', fontWeight: 'bold', color: '#FF4C6C' }}>
-              {role === 'sender' ? getPromptText(detectionData) : (isReceiverActive ? (receiverMode === 'learning' ? `📚 基礎教學 (${receiverCurrentIndex + 1} / ${receiverTargetString.length})` : `📝 測驗進行中 (${receiverCurrentIndex + 1} / ${receiverTargetString.length})`) : '請選擇左側模式以開始')}
+              {(() => {
+                if (role === 'sender') {
+                  let prefix = '';
+                  // 若已經在挑戰模式 (包含準備開始的 IDLE 狀態)，或是處於非 IDLE 狀態 (如自由練習)
+                  const isActive = detectionData && (detectionData.challenge_info?.is_challenge_mode || detectionData.state !== 'IDLE');
+                  if (isActive) {
+                    if (senderMode === 'exam') prefix = '【隨機測驗】 ';
+                    else if (senderMode === 'practice') prefix = '【指定練習】 ';
+                    else prefix = '【自由練習】 ';
+                  } else {
+                    prefix = '【系統待機】 ';
+                  }
+                  return prefix + getPromptText(detectionData);
+                } else {
+                  if (!isReceiverActive) return '【系統待機】 請選擇左側模式以開始';
+                  if (receiverMode === 'learning') return `【基礎教學】 (${receiverCurrentIndex + 1} / ${receiverTargetString.length})`;
+                  return `【隨機測驗】 (${receiverCurrentIndex + 1} / ${receiverTargetString.length})`;
+                }
+              })()}
             </div>
             {detectionData?.challenge_info?.target_string && role === 'sender' && (
               <div style={{ display: 'flex', alignItems: 'center', gap: '20px', background: '#000', padding: '10px 20px', borderRadius: '8px', border: '1px solid #444' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                   <span style={{ fontSize: '0.8em', color: '#888' }}>目標文字</span>
                   <div style={{ fontSize: '1.5em', fontWeight: 'bold' }}>
-                    {detectionData.challenge_info.target_string.split('').map((c, i) => (
-                      <span key={i} style={{ color: i === detectionData.challenge_info.current_word_index ? '#FFD700' : '#fff' }}>{c}</span>
-                    ))}
+                    {(() => {
+                      const fullStr = detectionData.challenge_info.target_string;
+                      if (!fullStr.includes(',')) {
+                        return fullStr.split('').map((c, i) => (
+                          <span key={i} style={{ color: i === detectionData.challenge_info.current_word_index ? '#FFD700' : '#fff' }}>{c}</span>
+                        ));
+                      }
+                      
+                      const words = fullStr.split(',');
+                      let charCount = 0;
+                      let currentWordIdx = 0;
+                      let activeCharInWord = -1;
+                      
+                      for (let i = 0; i < words.length; i++) {
+                         const nextCount = charCount + words[i].length + 1; // +1 for comma
+                         if (detectionData.challenge_info.current_word_index < nextCount) {
+                             currentWordIdx = i;
+                             activeCharInWord = detectionData.challenge_info.current_word_index - charCount;
+                             break;
+                         }
+                         charCount = nextCount;
+                      }
+                      
+                      if (currentWordIdx >= words.length) return <span style={{color: '#fff'}}>測驗完成</span>;
+
+                      return (
+                        <>
+                          <div style={{ fontSize: '0.6em', color: '#17a2b8', marginBottom: '5px' }}>第 {currentWordIdx + 1} / 5 題</div>
+                          {words[currentWordIdx].split('').map((c, i) => (
+                            <span key={i} style={{ color: i === activeCharInWord ? '#FFD700' : '#fff' }}>{c}</span>
+                          ))}
+                        </>
+                      );
+                    })()}
                   </div>
                 </div>
                 <div style={{ width: '1px', height: '30px', background: '#444' }}></div>
@@ -452,8 +560,9 @@ const VideoStream: React.FC = () => {
                   const searchUpper = dictionarySearch.toUpperCase();
                   let filtered = Object.entries(mapping).filter(([char, seq]) => {
                     if (!dictionarySearch) return /^[A-Z0-9#]$/i.test(char);
+                    // 同時將字元與序列(如果有英文字母)轉大寫比對，達到無視大小寫
                     return char.toUpperCase().includes(searchUpper) || 
-                           seq.includes(dictionarySearch) || 
+                           seq.toUpperCase().includes(searchUpper) || 
                            searchUpper.includes(char.toUpperCase());
                   });
                   
