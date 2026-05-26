@@ -390,12 +390,11 @@ const VideoStream: React.FC = () => {
         </aside>
 
         <main style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '15px', minWidth: 0 }}>
-          <div style={{ height: '85px', backgroundColor: '#1e1e1e', borderRadius: '10px', border: '1px solid #333', display: 'flex', alignItems: 'center', padding: '0 25px', justifyContent: 'space-between' }}>
-            <div style={{ fontSize: '1.6em', fontWeight: 'bold', color: '#FF4C6C' }}>
+          <div style={{ height: '60px', backgroundColor: '#1e1e1e', borderRadius: '10px', border: '1px solid #333', display: 'flex', alignItems: 'center', padding: '0 20px', position: 'relative', flexShrink: 0 }}>
+            <div style={{ fontSize: '1.4em', fontWeight: 'bold', color: '#FF4C6C' }}>
               {(() => {
                 if (role === 'sender') {
                   let prefix = '';
-                  // 若已經在挑戰模式 (包含準備開始的 IDLE 狀態)，或是處於非 IDLE 狀態 (如自由練習)
                   const isActive = detectionData && (detectionData.challenge_info?.is_challenge_mode || detectionData.state !== 'IDLE');
                   if (isActive) {
                     if (senderMode === 'exam') prefix = '【隨機測驗】 ';
@@ -413,10 +412,35 @@ const VideoStream: React.FC = () => {
               })()}
             </div>
             {detectionData?.challenge_info?.target_string && role === 'sender' && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '20px', background: '#000', padding: '10px 20px', borderRadius: '8px', border: '1px solid #444' }}>
+              <div style={{ position: 'absolute', right: '15px', top: '50%', transform: 'translateY(-50%)', display: 'flex', alignItems: 'center', gap: '15px', background: '#000', padding: '6px 15px', borderRadius: '8px', border: '1px solid #444', zIndex: 20, boxShadow: '0 4px 8px rgba(0,0,0,0.5)' }}>
+                {(() => {
+                   const fullStr = detectionData.challenge_info.target_string;
+                   if (fullStr.includes(',')) {
+                      const words = fullStr.split(',');
+                      let charCount = 0;
+                      let currentWordIdx = 0;
+                      for (let i = 0; i < words.length; i++) {
+                         const nextCount = charCount + words[i].length + 1;
+                         if (detectionData.challenge_info.current_word_index < nextCount) {
+                             currentWordIdx = i;
+                             break;
+                         }
+                         charCount = nextCount;
+                      }
+                      if (currentWordIdx < words.length) {
+                         return (
+                           <>
+                             <div style={{ color: '#17a2b8', fontWeight: 'bold', fontSize: '1em', whiteSpace: 'nowrap' }}>第 {currentWordIdx + 1}/5 題</div>
+                             <div style={{ width: '1px', height: '25px', background: '#444' }}></div>
+                           </>
+                         );
+                      }
+                   }
+                   return null;
+                })()}
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                  <span style={{ fontSize: '0.8em', color: '#888' }}>目標文字</span>
-                  <div style={{ fontSize: '1.5em', fontWeight: 'bold' }}>
+                  <span style={{ fontSize: '0.75em', color: '#888' }}>目標文字</span>
+                  <div style={{ fontSize: '1.3em', fontWeight: 'bold' }}>
                     {(() => {
                       const fullStr = detectionData.challenge_info.target_string;
                       if (!fullStr.includes(',')) {
@@ -424,14 +448,14 @@ const VideoStream: React.FC = () => {
                           <span key={i} style={{ color: i === detectionData.challenge_info.current_word_index ? '#FFD700' : '#fff' }}>{c}</span>
                         ));
                       }
-                      
+
                       const words = fullStr.split(',');
                       let charCount = 0;
                       let currentWordIdx = 0;
                       let activeCharInWord = -1;
-                      
+
                       for (let i = 0; i < words.length; i++) {
-                         const nextCount = charCount + words[i].length + 1; // +1 for comma
+                         const nextCount = charCount + words[i].length + 1;
                          if (detectionData.challenge_info.current_word_index < nextCount) {
                              currentWordIdx = i;
                              activeCharInWord = detectionData.challenge_info.current_word_index - charCount;
@@ -439,25 +463,19 @@ const VideoStream: React.FC = () => {
                          }
                          charCount = nextCount;
                       }
-                      
+
                       if (currentWordIdx >= words.length) return <span style={{color: '#fff'}}>測驗完成</span>;
 
-                      return (
-                        <>
-                          <div style={{ fontSize: '0.6em', color: '#17a2b8', marginBottom: '5px' }}>第 {currentWordIdx + 1} / 5 題</div>
-                          {words[currentWordIdx].split('').map((c, i) => (
-                            <span key={i} style={{ color: i === activeCharInWord ? '#FFD700' : '#fff' }}>{c}</span>
-                          ))}
-                        </>
-                      );
+                      return words[currentWordIdx].split('').map((c, i) => (
+                        <span key={i} style={{ color: i === activeCharInWord ? '#FFD700' : '#fff' }}>{c}</span>
+                      ));
                     })()}
                   </div>
                 </div>
-                <div style={{ width: '1px', height: '30px', background: '#444' }}></div>
+                <div style={{ width: '1px', height: '25px', background: '#444' }}></div>
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
-                  <span style={{ fontSize: '0.8em', color: '#888' }}>信號序列</span>
-                  <div style={{ fontSize: '1.3em', letterSpacing: '5px' }}>
-                    {detectionData.challenge_info.current_char_target_sequence.map((s, i) => (
+                  <span style={{ fontSize: '0.75em', color: '#888' }}>信號序列</span>
+                  <div style={{ fontSize: '1.2em', letterSpacing: '5px' }}>                    {detectionData.challenge_info.current_char_target_sequence.map((s, i) => (
                       <strong key={i} style={{ 
                         color: i === detectionData.challenge_info.current_char_next_digit_index ? '#FFD700' : (i < detectionData.challenge_info.current_char_next_digit_index ? '#333' : '#666'),
                         textDecoration: i < detectionData.challenge_info.current_char_next_digit_index ? 'line-through' : 'none'
