@@ -31,6 +31,8 @@ interface DetectionData {
   word_history: string[];
   challenge_info: ChallengeInfo;
   exam_stats?: ExamStats;
+  compute_device?: string;
+  backend_fps?: number;
 }
 
 const promptMessages: { [key: string]: (data: DetectionData) => string } = {
@@ -86,7 +88,7 @@ const VideoStream: React.FC = () => {
   const [isDictionaryOpen, setIsDictionaryOpen] = useState(false);
   const [isInfoOpen, setIsInfoOpen] = useState(false);
   const [dictionarySearch, setDictionarySearch] = useState('');
-  const [resultOverlay, setResultOverlay] = useState<string | null>(null);
+  const [resultOverlay, setResultOverlay] = useState<{ title: string, content: string } | null>(null);
 
   const lastStateRef = useRef<string>('');
   const lastErrorLockRef = useRef<boolean>(false);
@@ -136,7 +138,10 @@ const VideoStream: React.FC = () => {
           if (data.state !== lastStateRef.current) {
             if (data.state === 'CHALLENGE_COMPLETE_PROMPT') {
               audioRefs.success.current.play().catch(()=>{});
-              setResultOverlay(data.word_history.join(''));
+              setResultOverlay({
+                title: data.challenge_info?.challenge_type === 'exam' ? '測驗完成' : '練習完成',
+                content: data.word_history.join('')
+              });
               setTimeout(() => setResultOverlay(null), 2500);
             } else if (data.state === 'COOLDOWN' || data.state === 'CHALLENGE_AWAITING_GESTURE') {
               if (!data.challenge_info?.is_error_locked) {
@@ -246,7 +251,10 @@ const VideoStream: React.FC = () => {
           setReceiverHasErrored(false);
           if (receiverMode === 'exam') setReceiverOptions(generateOptions(receiverTargetString[nextIdx]));
         } else {
-          setResultOverlay("測驗完成！");
+          setResultOverlay({
+            title: receiverMode === 'exam' ? '測驗完成' : '學習完成',
+            content: receiverMode === 'exam' ? '恭喜過關' : '教學結束'
+          });
           setTimeout(() => {
             setResultOverlay(null);
             setIsReceiverActive(false);
@@ -290,17 +298,24 @@ const VideoStream: React.FC = () => {
     if (!detectionData) return null;
     const info = detectionData.challenge_info;
     if (info?.challenge_type === 'exam') return null;
+    
+    // 優先判定系統狀態的指示圖
+    if (detectionData.state === 'IDLE' || detectionData.state === 'CHALLENGE_READY_TO_END') return '/digits/start&end.png';
+    if (detectionData.state === 'WAITING' || detectionData.state === 'COOLDOWN' || detectionData.state === 'CHALLENGE_AWAITING_GESTURE') return '/digits/stay.png';
+    
+    // 如果處於偵測狀態，才顯示下一個該打的字元
     const next = info?.current_char_target_sequence[info.current_char_next_digit_index];
     if (next) return `/digits/${encodeURIComponent(next)}.png`;
-    return (detectionData.state === 'IDLE' || detectionData.state === 'CHALLENGE_READY_TO_END') ? '/digits/start&end.png' : '/digits/stay.png';
+    
+    return null;
   };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', backgroundColor: '#121212', color: '#e0e0e0', height: '100vh', width: '100vw', overflow: 'hidden' }}>
       {resultOverlay && (
         <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', backgroundColor: 'rgba(40, 167, 69, 0.95)', padding: '40px 80px', borderRadius: '20px', zIndex: 999, textAlign: 'center', animation: 'popInOut 2.5s forwards' }}>
-          <h2 style={{ fontSize: '2em' }}>練習完成</h2>
-          <div style={{ fontSize: '5em', fontWeight: 'bold' }}>{resultOverlay}</div>
+          <h2 style={{ fontSize: '2em', margin: '0 0 10px 0' }}>{resultOverlay.title}</h2>
+          <div style={{ fontSize: '5em', fontWeight: 'bold' }}>{resultOverlay.content}</div>
         </div>
       )}
       <style>{`.btn-hover:hover { filter: brightness(1.2); } .tab-active { background-color: #007bff !important; color: white !important; } .sys-active { background-color: #28a745 !important; color: white !important; } @keyframes popInOut { 0% { opacity: 0; transform: translate(-50%, -50%) scale(0.5); } 15% { opacity: 1; transform: translate(-50%, -50%) scale(1.05); } 100% { opacity: 0; transform: translate(-50%, -50%) scale(0.9); } }`}</style>
@@ -476,6 +491,21 @@ const VideoStream: React.FC = () => {
                     </div>
                   </div>
                 )}
+                <div style={{ position: 'absolute', top: '20px', right: '20px', backgroundColor: 'rgba(0,0,0,0.7)', padding: '10px 15px', borderRadius: '10px', color: 'white', fontSize: '0.9em', border: '1px solid #555', zIndex: 10, display: 'flex', gap: '15px', alignItems: 'center' }}>
+                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                     <span style={{ color: '#aaa', fontSize: '0.8em' }}>FPS</span>
+                     <strong style={{ color: (detectionData?.backend_fps || 0) >= 24 ? '#28a745' : '#FFD700' }}>
+                        {detectionData?.backend_fps || 0}
+                     </strong>
+                   </div>
+                   <div style={{ width: '1px', height: '25px', backgroundColor: '#555' }}></div>
+                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                     <span style={{ color: '#aaa', fontSize: '0.8em' }}>運算單元</span>
+                     <strong style={{ color: detectionData?.compute_device === 'CUDA' ? '#28a745' : '#dc3545' }}>
+                       {detectionData?.compute_device || '---'}
+                     </strong>
+                   </div>
+                </div>
                 {getHintImage() && (
                   <div style={{ position: 'absolute', bottom: '25px', right: '25px', width: '220px', height: '220px', backgroundColor: '#666', borderRadius: '15px', padding: '15px', border: '4px solid #007bff', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 10px 30px rgba(0,0,0,0.5)' }}>
                     <img src={getHintImage()!} alt="Hint" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', transform: isMirrored ? 'scaleX(-1)' : 'none' }} />
