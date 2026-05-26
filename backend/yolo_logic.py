@@ -171,6 +171,7 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                         num_map = {'A':'1','B':'2','C':'3','D':'4','E':'5','F':'6','G':'7','H':'8','I':'9'}
                         sig = num_map[sig]
                     elif sig == 'K': sig = '0'
+                    elif not sig.isdigit(): continue # 數字模式下，過濾非數字字母
                 if current_system == 'navy' and expected_char is not None:
                     if str(sig).upper() == str(expected_char).upper(): return sig
                 if best_match is None: best_match = sig
@@ -219,6 +220,10 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
     history = {k: deque(maxlen=SMOOTHING_WINDOW_SIZE) for k in ['left_angle','right_angle','left_elbow','right_elbow']}
     arm_straight_timer = 0.0
     frame_counter = 0
+    
+    fps_start_time = time.time()
+    fps_frame_count = 0
+    current_backend_fps = 0
 
     try:
         while True:
@@ -226,6 +231,12 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
             if not ret: break
             current_time = time.time()
             frame_counter += 1
+            
+            fps_frame_count += 1
+            if current_time - fps_start_time >= 1.0:
+                current_backend_fps = round(fps_frame_count / (current_time - fps_start_time))
+                fps_frame_count = 0
+                fps_start_time = current_time
             
             # --- 指令同步 ---
             if session_state.get("new_challenge_string") is not None:
@@ -322,13 +333,21 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                 else: arm_straight_timer = 0.0
                 arms_stable_bent = bool(arm_straight_timer > 0 and (current_time - arm_straight_timer) > 1.5)
 
-                if state in ["IDLE", "CHALLENGE_READY_TO_END", "READY", "COOLDOWN"]:
+                if state in ["IDLE", "CHALLENGE_READY_TO_END", "READY", "COOLDOWN", "DETECTING", "GRACE_PERIOD"]:
                     if gesture_complete and not h_up:
-                        if state == "CHALLENGE_READY_TO_END": state, state_timer = "CHALLENGE_COMPLETE_PROMPT", time.time()
-                        elif state == "IDLE": state = "WAITING"
-                        else: state = "IDLE"
+                        if state == "CHALLENGE_READY_TO_END": 
+                            state, state_timer = "CHALLENGE_COMPLETE_PROMPT", time.time()
+                        elif not is_in_challenge_mode and len(word_history) > 0 and state != "IDLE":
+                            state, state_timer = "CHALLENGE_COMPLETE_PROMPT", time.time()
+                        elif state == "IDLE": 
+                            state = "WAITING"
+                            word_history.clear()
+                        else: 
+                            state = "IDLE"
+                            word_history.clear()
+                            
                         gesture_complete, cross_count, cross_sub_state = False, 0, "UNCROSSED"
-                        sequence.clear(); word_history.clear(); challenge_user_sequence.clear(); current_digit, display_result, is_error_locked = None, None, False
+                        sequence.clear(); challenge_user_sequence.clear(); current_digit, display_result, is_error_locked = None, None, False
                         if is_in_challenge_mode and state == "WAITING":
                             challenge_current_word_index = 0
                             first_char = challenge_target_string[0] if len(challenge_target_string) > 0 else ""
@@ -337,6 +356,10 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                             else:
                                 current_char_target_sequence = list(reverse_mapping.get(first_char, []))
                             current_char_next_digit_index = 0
+                            if challenge_type == "exam" and "exam_stats" in session_state:
+                                session_state["exam_stats"]["correct_signals"] = 0
+                                session_state["exam_stats"]["has_errored_on_current_signal"] = False
+                                session_state["exam_stats"]["total_signals"] = 0
                             if challenge_type == "exam" and "exam_stats" in session_state:
                                 session_state["exam_stats"]["correct_signals"] = 0
                                 session_state["exam_stats"]["has_errored_on_current_signal"] = False
@@ -431,7 +454,10 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                         elif time.time() - state_timer > STRAIGHTEN_GRACE_PERIOD: state, current_digit = "READY", None
                 elif state in ["COOLDOWN", "CHALLENGE_AWAITING_GESTURE"] and is_ready_pose(angs['left_angle'], angs['right_angle']): state, current_digit = ("READY" if state == "COOLDOWN" else "CHALLENGE_READY_TO_END"), None
                 elif state == "CHALLENGE_COMPLETE_PROMPT" and time.time() - state_timer > 2.0:
-                    if challenge_type == "exam":
+                    word_history.clear()
+                    if not is_in_challenge_mode:
+                        state = "IDLE"
+                    elif challenge_type == "exam":
                         state = "IDLE"
                         is_in_challenge_mode = False
                         if "exam_stats" in session_state: del session_state["exam_stats"]
@@ -489,11 +515,13 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                 "flag_boxes": [], "mode": current_mode, "word_history": list(word_history),
                 "challenge_info": {"is_challenge_mode":bool(is_in_challenge_mode),"challenge_type":challenge_type,"target_string":challenge_target_string,"current_word_index":int(challenge_current_word_index),"current_char_target_sequence":current_char_target_sequence,"current_char_next_digit_index":int(current_char_next_digit_index),"is_error_locked":bool(is_error_locked)},
                 "correction_data": corr_info,
-                "exam_stats": session_state.get("exam_stats")
+                "exam_stats": session_state.get("exam_stats"),
+                "compute_device": "CUDA" if is_gpu else "CPU",
+                "backend_fps": current_backend_fps
             }
 
             if current_mode == 'practice' and not is_in_challenge_mode and len(sequence) == (1 if current_system == 'navy' else 4):
-                res = mapping.get("".join(sequence), "□")
+                res = mapping.get("".join(sequence), "?")
                 word_history.append(res); completed_sequences_stack.append(list(sequence)); sequence.clear()
                 detection_data["display_result"] = res
 
@@ -511,4 +539,3 @@ if __name__ == '__main__':
     parser.add_argument('--flag_model_path', type=str, default='flag.pt'); parser.add_argument('--mapping_csv', type=str, default='mapping.csv')
     args = parser.parse_args()
     for f, d in run_detection(video_source_str=args.video_source, model_path=args.model_path, flag_model_path=args.flag_model_path, mapping_csv_path=args.mapping_csv): pass
-el_path, flag_model_path=args.flag_model_path, mapping_csv_path=args.mapping_csv): pass
