@@ -90,8 +90,27 @@ const VideoStream: React.FC = () => {
   const [dictionarySearch, setDictionarySearch] = useState('');
   const [resultOverlay, setResultOverlay] = useState<{ title: string, content: string } | null>(null);
 
+  const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
+  const [selectedCameraIndex, setSelectedCameraIndex] = useState<number>(0);
+
   const lastStateRef = useRef<string>('');
   const lastErrorLockRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    navigator.mediaDevices.getUserMedia({ video: true })
+      .then(stream => {
+        navigator.mediaDevices.enumerateDevices().then(devices => {
+          setCameras(devices.filter(device => device.kind === 'videoinput'));
+        });
+        stream.getTracks().forEach(track => track.stop());
+      })
+      .catch(err => {
+        console.error("Camera access denied:", err);
+        navigator.mediaDevices.enumerateDevices().then(devices => {
+          setCameras(devices.filter(device => device.kind === 'videoinput'));
+        });
+      });
+  }, []);
 
   const loadData = useCallback(() => {
     // 使用相對路徑，增加相容性與減少硬編碼 port 的風險
@@ -328,7 +347,25 @@ const VideoStream: React.FC = () => {
             <button className={`btn-hover ${system === 'navy' ? 'sys-active' : ''}`} onClick={() => setSystem('navy')} style={{ padding: '6px 15px', background: 'transparent', border: 'none', color: '#aaa', cursor: 'pointer', borderLeft: '1px solid #444' }}>海軍 (英文)</button>
           </div>
         </div>
-        <div style={{ display: 'flex', gap: '15px' }}>
+        <div style={{ display: 'flex', gap: '15px', alignItems: 'center' }}>
+          {cameras.length > 0 && (
+            <select
+              value={selectedCameraIndex}
+              onChange={(e) => {
+                const newIdx = parseInt(e.target.value);
+                setSelectedCameraIndex(newIdx);
+                sendMessage('set_camera', { device_id: newIdx.toString() });
+              }}
+              style={{ padding: '5px', borderRadius: '5px', backgroundColor: '#333', color: 'white', border: '1px solid #555', cursor: 'pointer' }}
+            >
+              {cameras.map((cam, idx) => (
+                <option key={cam.deviceId || idx} value={idx}>
+                  {cam.label || `Camera ${idx + 1}`}
+                </option>
+              ))}
+              <option value="-1">關閉攝影機 (Off)</option>
+            </select>
+          )}
           <label style={{ fontSize: '0.9em' }}><input type="checkbox" checked={isMirrored} onChange={() => setIsMirrored(!isMirrored)} /> 鏡像</label>
           <label style={{ fontSize: '0.9em' }}><input type="checkbox" checked={isAudioEnabled} onChange={() => setIsAudioEnabled(!isAudioEnabled)} /> 音效</label>
           <button className="btn-hover" onClick={() => setIsDictionaryOpen(true)} style={{ padding: '6px 15px', backgroundColor: '#6f42c1', color: 'white', border: 'none', borderRadius: '5px', fontWeight: 'bold', cursor: 'pointer' }}>旗語字典</button>

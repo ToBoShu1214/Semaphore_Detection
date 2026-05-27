@@ -203,10 +203,16 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
         final_csv_path = get_resource_path(mapping_csv_path)
         mapping, reverse_mapping = load_mapping(final_csv_path)
 
-    cap = create_video_capture(video_source_str)
-    if not cap.isOpened(): return
-    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    is_camera_off = (str(video_source_str) == "-1")
+    if not is_camera_off:
+        cap = create_video_capture(video_source_str)
+        if not cap.isOpened(): return
+        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    else:
+        cap = None
+        frame_width, frame_height = 1280, 720
+
     DISPLAY_HEIGHT = int(DISPLAY_WIDTH / (frame_width / frame_height))
 
     # 狀態變數
@@ -220,16 +226,21 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
     history = {k: deque(maxlen=SMOOTHING_WINDOW_SIZE) for k in ['left_angle','right_angle','left_elbow','right_elbow']}
     arm_straight_timer = 0.0
     frame_counter = 0
-    
+
     fps_start_time = time.time()
     fps_frame_count = 0
     current_backend_fps = 0
 
     try:
         while True:
-            ret, frame = cap.read()
-            if not ret: break
-            current_time = time.time()
+            if is_camera_off:
+                frame = np.zeros((frame_height, frame_width, 3), dtype=np.uint8)
+                ret = True
+                time.sleep(0.1) # 降低 CPU 使用率
+            else:
+                ret, frame = cap.read()
+
+            if not ret: break            current_time = time.time()
             frame_counter += 1
             
             fps_frame_count += 1
@@ -531,7 +542,8 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                 cv2.rectangle(rs_f, (int(b[0]*DISPLAY_WIDTH/frame_width), int(b[1]*DISPLAY_HEIGHT/frame_height)), (int(b[2]*DISPLAY_WIDTH/frame_width), int(b[3]*DISPLAY_HEIGHT/frame_height)), (255,0,0), 2)
             _, jpeg = cv2.imencode('.jpg', rs_f)
             yield jpeg.tobytes(), detection_data
-    finally: cap.release()
+    finally: 
+        if cap: cap.release()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
