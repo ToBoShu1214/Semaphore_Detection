@@ -141,6 +141,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 state["mode"] = p.get("mode", state["mode"])
                 state["system"] = p.get("system", state["system"])
                 await start_stream()
+            elif cmd["command"] == "set_camera":
+                state["video_source"] = str(p.get("device_id", "0"))
+                await start_stream()
             elif cmd["command"] == "set_challenge_mode":
                 if p.get("enabled"):
                     state["session"]["new_challenge_string"] = p.get("chars")
