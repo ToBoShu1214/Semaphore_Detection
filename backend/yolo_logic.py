@@ -57,11 +57,15 @@ def load_mapping(csv_file):
         pass
     return mapping, reverse_mapping
 
-def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model_path='flag.pt', mapping_csv_path='mapping.csv', current_mode='practice', current_system='chinese', target_sequence=None, start_exam_signal=False, stop_exam_signal=False, is_flag_required=True, session_state=None):
+def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model_path='flag.pt', mapping_csv_path='mapping.csv', current_mode='practice', current_system='chinese', target_sequence=None, start_exam_signal=False, stop_exam_signal=False, is_flag_required=True, session_state=None, compute_device_pref='auto'):
     # -----------------------
     # 初始化設備與效能設定
     # -----------------------
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    if compute_device_pref == 'cpu':
+        device = 'cpu'
+    else:
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        
     is_gpu = (device == 'cuda')
     print(f"[INFO] 偵測引擎啟動中... 運行設備: {device.upper()}")
 
