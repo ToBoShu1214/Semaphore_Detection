@@ -90,7 +90,7 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     
     state = {
-        "mode": "practice", "system": "chinese", "video_source": "0", "is_flag": True,
+        "mode": "practice", "system": "chinese", "video_source": "0", "is_flag": True, "compute_device": "auto",
         "session": {
             "new_challenge_string": None, "stop_challenge_mode": False, 
             "correction_target": None, "navy_sub_mode": "ALPHA",
@@ -114,7 +114,8 @@ async def websocket_endpoint(websocket: WebSocket):
             is_flag_required=state["is_flag"],
             flag_model_path=flag_model,
             mapping_csv_path=mapping_csv,
-            session_state=state["session"]
+            session_state=state["session"],
+            compute_device_pref=state["compute_device"]
         )
         
         async def run():
@@ -143,6 +144,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 await start_stream()
             elif cmd["command"] == "set_camera":
                 state["video_source"] = str(p.get("device_id", "0"))
+                await start_stream()
+            elif cmd["command"] == "set_compute_device":
+                state["compute_device"] = p.get("device", "auto")
                 await start_stream()
             elif cmd["command"] == "set_challenge_mode":
                 if p.get("enabled"):

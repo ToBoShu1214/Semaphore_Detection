@@ -92,6 +92,7 @@ const VideoStream: React.FC = () => {
 
   const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
   const [selectedCameraIndex, setSelectedCameraIndex] = useState<number>(0);
+  const [computeDevice, setComputeDevice] = useState<'auto' | 'cpu'>('auto');
 
   const lastStateRef = useRef<string>('');
   const lastErrorLockRef = useRef<boolean>(false);
@@ -554,11 +555,25 @@ const VideoStream: React.FC = () => {
                      </strong>
                    </div>
                    <div style={{ width: '1px', height: '25px', backgroundColor: '#555' }}></div>
-                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                   <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', position: 'relative' }}>
                      <span style={{ color: '#aaa', fontSize: '0.8em' }}>運算單元</span>
-                     <strong style={{ color: detectionData?.compute_device === 'CUDA' ? '#28a745' : '#dc3545' }}>
-                       {detectionData?.compute_device || '---'}
-                     </strong>
+                     <div style={{ position: 'relative' }}>
+                       <strong style={{ color: detectionData?.compute_device === 'CUDA' ? '#28a745' : '#dc3545', cursor: 'pointer' }}>
+                         {detectionData?.compute_device || '---'} ▾
+                       </strong>
+                       <select 
+                         value={computeDevice} 
+                         onChange={(e) => { 
+                           const dev = e.target.value as 'auto' | 'cpu';
+                           setComputeDevice(dev); 
+                           sendMessage('set_compute_device', { device: dev }); 
+                         }} 
+                         style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', opacity: 0, cursor: 'pointer' }}
+                       >
+                         <option value="auto">Auto (GPU優先)</option>
+                         <option value="cpu">Force CPU</option>
+                       </select>
+                     </div>
                    </div>
                 </div>
                 {getHintImage() && (
