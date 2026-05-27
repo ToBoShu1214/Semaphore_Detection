@@ -205,10 +205,17 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
 
     is_camera_off = (str(video_source_str) == "-1")
     if not is_camera_off:
+        print(f"[INFO] 嘗試開啟攝影機 ID: {video_source_str}")
         cap = create_video_capture(video_source_str)
-        if not cap.isOpened(): return
-        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if not cap.isOpened(): 
+            print(f"[ERROR] 無法開啟攝影機 ID: {video_source_str}，將強制切換為關閉模式。")
+            is_camera_off = True
+            cap = None
+            frame_width, frame_height = 1280, 720
+        else:
+            frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            print(f"[INFO] 攝影機開啟成功 (解析度: {frame_width}x{frame_height})")
     else:
         cap = None
         frame_width, frame_height = 1280, 720
@@ -230,9 +237,14 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
     fps_start_time = time.time()
     fps_frame_count = 0
     current_backend_fps = 0
+    
+    experiment_frame_count = 0
+    experiment_accumulated_time = 0.0
 
     try:
         while True:
+            t_start = time.time()
+            
             if is_camera_off:
                 frame = np.zeros((frame_height, frame_width, 3), dtype=np.uint8)
                 ret = True
@@ -240,7 +252,8 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
             else:
                 ret, frame = cap.read()
 
-            if not ret: break            current_time = time.time()
+            if not ret: break
+            current_time = time.time()
             frame_counter += 1
             
             fps_frame_count += 1
@@ -541,8 +554,23 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                 b = last_known_target_person_bbox
                 cv2.rectangle(rs_f, (int(b[0]*DISPLAY_WIDTH/frame_width), int(b[1]*DISPLAY_HEIGHT/frame_height)), (int(b[2]*DISPLAY_WIDTH/frame_width), int(b[3]*DISPLAY_HEIGHT/frame_height)), (255,0,0), 2)
             _, jpeg = cv2.imencode('.jpg', rs_f)
+
+            t_end = time.time()
+            experiment_accumulated_time += (t_end - t_start)
+            experiment_frame_count += 1
+            if experiment_frame_count >= 300:
+                avg_latency_ms = (experiment_accumulated_time / 300) * 1000
+                avg_fps = 300.0 / experiment_accumulated_time if experiment_accumulated_time > 0 else 0
+                try:
+                    with open("performance_log.txt", "a", encoding="utf-8") as lf:
+                        lf.write(f"[效能測試] 累積 300 幀 | 設備: {'CUDA' if is_gpu else 'CPU'} | 平均推論延遲: {avg_latency_ms:.2f} ms | 平均 FPS: {avg_fps:.2f}\n")
+                except Exception:
+                    pass
+                experiment_frame_count = 0
+                experiment_accumulated_time = 0.0
+
             yield jpeg.tobytes(), detection_data
-    finally: 
+    finally:
         if cap: cap.release()
 
 if __name__ == '__main__':
