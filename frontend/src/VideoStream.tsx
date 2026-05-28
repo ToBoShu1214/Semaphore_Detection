@@ -93,9 +93,50 @@ const VideoStream: React.FC = () => {
   const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
   const [selectedCameraIndex, setSelectedCameraIndex] = useState<number>(0);
   const [computeDevice, setComputeDevice] = useState<'auto' | 'cpu'>('auto');
+  const [countdown, setCountdown] = useState<number | null>(null);
 
   const lastStateRef = useRef<string>('');
   const lastErrorLockRef = useRef<boolean>(false);
+
+  const startCountdown = (callback: () => void) => {
+    setCountdown(3);
+    const timer = setInterval(() => {
+      setCountdown(prev => {
+        if (prev === null || prev <= 1) {
+          clearInterval(timer);
+          callback();
+          return null;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
+  const startSenderMode = (mode: 'free' | 'practice' | 'exam') => {
+    startCountdown(() => {
+      setSenderMode(mode);
+      if (mode === 'free') {
+        sendMessage('set_challenge_mode', { enabled: false });
+      } else if (mode === 'practice') {
+        sendMessage('set_challenge_mode', { enabled: true, chars: customPracticeString, type: 'teaching' });
+      } else if (mode === 'exam') {
+        startSenderExamActual();
+      }
+    });
+  };
+
+  const startSenderExamActual = () => {
+    const bank = questions[system];
+    if (bank && bank.length > 0) {
+      let testStr = "";
+      for (let i = 0; i < 5; i++) {
+        testStr += bank[Math.floor(Math.random() * bank.length)];
+        if (i < 4) testStr += ",";
+      }
+      sendMessage('set_challenge_mode', { enabled: true, chars: testStr, type: 'exam' });
+      setSenderMode('exam');
+    } else alert("題庫載入中...");
+  };
 
   useEffect(() => {
     navigator.mediaDevices.getUserMedia({ video: true })
@@ -338,6 +379,12 @@ const VideoStream: React.FC = () => {
           <div style={{ fontSize: '5em', fontWeight: 'bold' }}>{resultOverlay.content}</div>
         </div>
       )}
+      {countdown !== null && (
+        <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', backgroundColor: 'rgba(0, 0, 0, 0.8)', padding: '60px 100px', borderRadius: '50%', zIndex: 1000, textAlign: 'center', border: '4px solid #007bff', boxShadow: '0 0 30px rgba(0, 123, 255, 0.5)' }}>
+          <div style={{ fontSize: '8em', fontWeight: 'bold', color: '#fff', lineHeight: 1 }}>{countdown}</div>
+          <div style={{ fontSize: '1.5em', color: '#007bff', marginTop: '10px', fontWeight: 'bold' }}>準備就位...</div>
+        </div>
+      )}
       <style>{`.btn-hover:hover { filter: brightness(1.2); } .tab-active { background-color: #007bff !important; color: white !important; } .sys-active { background-color: #28a745 !important; color: white !important; } @keyframes popInOut { 0% { opacity: 0; transform: translate(-50%, -50%) scale(0.5); } 15% { opacity: 1; transform: translate(-50%, -50%) scale(1.05); } 100% { opacity: 0; transform: translate(-50%, -50%) scale(0.9); } }`}</style>
 
       <header style={{ height: '60px', backgroundColor: '#1e1e1e', borderBottom: '1px solid #333', display: 'flex', alignItems: 'center', padding: '0 20px', justifyContent: 'space-between', flexShrink: 0 }}>
@@ -390,16 +437,16 @@ const VideoStream: React.FC = () => {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
                 <div style={{ background: '#252525', padding: '10px', borderRadius: '6px', border: '1px solid #333' }}>
                   <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#007bff', lineHeight: '1.2' }}>1. 自由練習 <span style={{ fontSize: '0.85em', fontWeight: 'normal', display: 'block', opacity: 0.8 }}>(無限制)</span></div>
-                  <button className="btn-hover" onClick={() => { setSenderMode('free'); sendMessage('set_challenge_mode', { enabled: false }); }} style={{ width: '100%', padding: '10px', background: senderMode === 'free' && !detectionData?.challenge_info?.is_challenge_mode && detectionData?.state !== 'IDLE' ? '#007bff' : '#444', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>開始自由練習</button>
+                  <button className="btn-hover" onClick={() => startSenderMode('free')} style={{ width: '100%', padding: '10px', background: senderMode === 'free' && !detectionData?.challenge_info?.is_challenge_mode && detectionData?.state !== 'IDLE' ? '#007bff' : '#444', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>開始自由練習</button>
                 </div>
                 <div style={{ background: '#252525', padding: '10px', borderRadius: '6px', border: '1px solid #333' }}>
                   <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#ccc', lineHeight: '1.2' }}>2. 指定練習 <span style={{ fontSize: '0.85em', fontWeight: 'normal', display: 'block', opacity: 0.8 }}>(有提示)</span></div>
                   <input type="text" value={customPracticeString} onChange={e => setCustomPracticeString(system === 'navy' ? e.target.value.toUpperCase() : e.target.value)} placeholder="輸入字串..." style={{ width: '100%', padding: '8px', borderRadius: '4px', border: '1px solid #555', background: '#111', color: 'white', marginBottom: '8px', boxSizing: 'border-box' }} />
-                  <button className="btn-hover" onClick={() => { setSenderMode('practice'); sendMessage('set_challenge_mode', { enabled: true, chars: customPracticeString, type: 'teaching' }); }} style={{ width: '100%', padding: '8px', background: senderMode === 'practice' && detectionData?.challenge_info?.is_challenge_mode ? '#17a2b8' : '#444', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>開始指定練習</button>
+                  <button className="btn-hover" onClick={() => startSenderMode('practice')} style={{ width: '100%', padding: '8px', background: senderMode === 'practice' && detectionData?.challenge_info?.is_challenge_mode ? '#17a2b8' : '#444', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>開始指定練習</button>
                 </div>
                 <div style={{ background: '#252525', padding: '10px', borderRadius: '6px', border: '1px solid #333' }}>
                   <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#dc3545', lineHeight: '1.2' }}>3. 隨機測驗 <span style={{ fontSize: '0.85em', fontWeight: 'normal', display: 'block', opacity: 0.8 }}>(無提示)</span></div>
-                  <button className="btn-hover" onClick={startSenderExam} style={{ width: '100%', padding: '10px', background: senderMode === 'exam' && detectionData?.challenge_info?.is_challenge_mode ? '#dc3545' : '#444', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>開始抽考</button>
+                  <button className="btn-hover" onClick={() => startSenderMode('exam')} style={{ width: '100%', padding: '10px', background: senderMode === 'exam' && detectionData?.challenge_info?.is_challenge_mode ? '#dc3545' : '#444', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>開始抽考</button>
                   {senderMode === 'exam' && detectionData?.exam_stats && (
                     <div style={{ marginTop: '10px', padding: '10px', background: '#111', borderRadius: '4px', fontSize: '0.9em' }}>
                       正確率: {((detectionData.exam_stats.correct_signals / (detectionData.exam_stats.total_signals || 1)) * 100).toFixed(1)}%

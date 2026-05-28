@@ -308,23 +308,78 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                         all_person_boxes[p_id] = box.xyxy[0].cpu().numpy()
                         all_person_kpts[p_id] = kpts_obj.xy[0].cpu().numpy()
             
-            # 目標鎖定邏輯
+            # 目標鎖定邏輯 (權重評分制)
             if target_person_id is None:
-                if is_flag_required:
-                    if frame_counter % 5 == 0:
-                        flag_res = flag_model.predict(frame, conf=0.5, verbose=False, device=device, half=is_gpu)
-                        flag_boxes = flag_res[0].boxes.xyxy.cpu().numpy().tolist() if flag_res and flag_res[0].boxes is not None else []
-                        if flag_boxes and all_person_kpts:
-                            for p_id, kpts in all_person_kpts.items():
-                                l_w, r_w = kpts[9], kpts[10]
-                                for fb in flag_boxes:
-                                    corners = [(fb[0],fb[1]),(fb[2],fb[1]),(fb[0],fb[3]),(fb[2],fb[3])]
-                                    if any(math.sqrt((w[0]-c[0])**2 + (w[1]-c[1])**2) < GRIP_CORNER_DISTANCE_THRESHOLD for w in [l_w,r_w] for c in corners if w[0]>0):
-                                        target_person_id = p_id; break
-                                if target_person_id: break
-                        elif len(all_person_kpts) == 1: target_person_id = list(all_person_kpts.keys())[0]
+                h, w = frame.shape[:2]
+                center_x, center_y = w / 2, h / 2
+                frame_area = w * h
+                
+                scores = {}
+                flag_boxes = []
+                
+                if is_flag_required and frame_counter % 5 == 0:
+                    flag_res = flag_model.predict(frame, conf=0.5, verbose=False, device=device, half=is_gpu)
+                    flag_boxes = flag_res[0].boxes.xyxy.cpu().numpy().tolist() if flag_res and flag_res[0].boxes is not None else []
+                
+                for p_id, kpts in all_person_kpts.items():
+                    # 1. 握旗分數 (主權重)
+                    has_flag = False
+                    if is_flag_required and flag_boxes:
+                        l_w, r_w = kpts[9], kpts[10]
+                        for fb in flag_boxes:
+                            corners = [(fb[0],fb[1]),(fb[2],fb[1]),(fb[0],fb[3]),(fb[2],fb[3])]
+                            if any(math.sqrt((w_pt[0]-c[0])**2 + (w_pt[1]-c[1])**2) < GRIP_CORNER_DISTANCE_THRESHOLD for w_pt in [l_w,r_w] for c in corners if w_pt[0]>0):
+                                has_flag = True; break
+                    
+                    # 2. 中心距離分數 (權重 60%)
+                    box = all_person_boxes[p_id]
+                    p_center_x = (box[0] + box[2]) / 2
+                    p_center_y = (box[1] + box[3]) / 2
+                    dist_to_center = math.sqrt((p_center_x - center_x)**2 + (p_center_y - center_y)**2)
+                    max_dist = math.sqrt(center_x**2 + center_y**2)
+                    center_score = (1.0 - (dist_to_center / max_dist)) * 600
+                    
+                    # 3. 面積分數 (權重 40%)
+                    p_area = (box[2] - box[0]) * (box[3] - box[1])
+                    area_score = (p_area / frame_area) * 400
+                    
+                    # 總分計算
+                    total_score = (1000 if has_flag else 0) + center_score + area_score
+                    scores[p_id] = total_score
+                
+                if scores:
+                    # 找出分數最高的人
+                    best_id = max(scores, key=scores.get)
+                    
+                    # 檢查是否有人拿旗子
+                    someone_has_flag = any(s >= 1000 for s in scores.values())
+                    
+                    if is_flag_required:
+                        if someone_has_flag:
+                            # 如果有人拿旗子，直接鎖定最高分的那位拿旗者
+                            # 先過濾出有旗子的人
+                            flag_holders = {k: v for k, v in scores.items() if v >= 1000}
+                            target_person_id = max(flag_holders, key=flag_holders.get)
+                            no_flag_start_time = 0.0 # 重置計時器
+                        elif len(all_person_kpts) == 1:
+                            # 只有一個人，直接鎖定
+                            target_person_id = best_id
+                            no_flag_start_time = 0.0
+                        else:
+                            # 多人且都沒旗子，啟動 5 秒計時器
+                            if no_flag_start_time == 0.0:
+                                no_flag_start_time = current_time
+                            
+                            # 如果超過 5 秒還是沒人拿旗子，則強制鎖定目前分數最高的人 (中心+面積)
+                            if (current_time - no_flag_start_time) > 5.0:
+                                target_person_id = best_id
+                                no_flag_start_time = 0.0
+                    else:
+                        target_person_id = best_id
+                        no_flag_start_time = 0.0
                 else:
-                    if all_person_boxes: target_person_id = max(all_person_boxes, key=lambda i: (all_person_boxes[i][2]-all_person_boxes[i][0])*(all_person_boxes[i][3]-all_person_boxes[i][1]))
+                    # 畫面上沒人，重置計時器
+                    no_flag_start_time = 0.0
 
             # 目標丟失處理
             target_kpts = all_person_kpts.get(target_person_id) if target_person_id else None
@@ -483,14 +538,9 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                 elif state in ["COOLDOWN", "CHALLENGE_AWAITING_GESTURE"] and is_ready_pose(angs['left_angle'], angs['right_angle']): state, current_digit = ("READY" if state == "COOLDOWN" else "CHALLENGE_READY_TO_END"), None
                 elif state == "CHALLENGE_COMPLETE_PROMPT" and time.time() - state_timer > 2.0:
                     word_history.clear()
-                    if not is_in_challenge_mode:
-                        state = "IDLE"
-                    elif challenge_type == "exam":
-                        state = "IDLE"
-                        is_in_challenge_mode = False
-                        if "exam_stats" in session_state: del session_state["exam_stats"]
-                    else:
-                        state = "CHALLENGE_AWAITING_INPUT"
+                    state = "IDLE"
+                    is_in_challenge_mode = False
+                    if "exam_stats" in session_state: del session_state["exam_stats"]
 
                 # --- 畫面提示文字 (Prompt) ---
             corr_info = {"target_signal":None,"target_l_angle":None,"target_r_angle":None,"l_angle_diff":None,"r_angle_diff":None,"l_angle_ok":False,"r_angle_ok":False,"l_arm_straight_ok":False,"r_arm_straight_ok":False,"l_advice":"-","r_advice":"-","is_correct":False}
