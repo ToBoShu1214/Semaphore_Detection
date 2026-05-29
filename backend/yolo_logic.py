@@ -609,20 +609,6 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                 cv2.rectangle(rs_f, (int(b[0]*DISPLAY_WIDTH/frame_width), int(b[1]*DISPLAY_HEIGHT/frame_height)), (int(b[2]*DISPLAY_WIDTH/frame_width), int(b[3]*DISPLAY_HEIGHT/frame_height)), (255,0,0), 2)
             _, jpeg = cv2.imencode('.jpg', rs_f)
 
-            t_end = time.time()
-            experiment_accumulated_time += (t_end - t_start)
-            experiment_frame_count += 1
-            if experiment_frame_count >= 300:
-                avg_latency_ms = (experiment_accumulated_time / 300) * 1000
-                avg_fps = 300.0 / experiment_accumulated_time if experiment_accumulated_time > 0 else 0
-                try:
-                    with open("performance_log.txt", "a", encoding="utf-8") as lf:
-                        lf.write(f"[效能測試] 累積 300 幀 | 設備: {'CUDA' if is_gpu else 'CPU'} | 平均推論延遲: {avg_latency_ms:.2f} ms | 平均 FPS: {avg_fps:.2f}\n")
-                except Exception:
-                    pass
-                experiment_frame_count = 0
-                experiment_accumulated_time = 0.0
-
             yield jpeg.tobytes(), detection_data
     finally:
         if cap: cap.release()
