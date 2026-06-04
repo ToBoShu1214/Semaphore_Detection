@@ -25,6 +25,14 @@ app.add_middleware(
 )
 
 def get_resource_path(relative_path):
+    # 1. 優先檢查執行檔同級目錄 (方便打包後修改設定)
+    if getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(sys.executable)
+        local_path = os.path.join(exe_dir, relative_path)
+        if os.path.exists(local_path):
+            return local_path
+
+    # 2. 檢查 PyInstaller 內部暫存目錄
     if hasattr(sys, '_MEIPASS'):
         return os.path.join(sys._MEIPASS, relative_path)
     

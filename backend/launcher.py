@@ -10,8 +10,17 @@ import ctypes
 
 # 取得資源路徑
 def get_resource_path(relative_path):
+    # 1. 優先檢查執行檔同級目錄 (方便打包後修改設定)
+    if getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(sys.executable)
+        local_path = os.path.join(exe_dir, relative_path)
+        if os.path.exists(local_path):
+            return local_path
+
+    # 2. 檢查 PyInstaller 內部暫存目錄
     if hasattr(sys, '_MEIPASS'):
         return os.path.join(sys._MEIPASS, relative_path)
+    
     return os.path.join(os.path.abspath("."), relative_path)
 
 def handle_console_visibility():
@@ -23,11 +32,13 @@ def handle_console_visibility():
                 config = json.load(f)
             show_console = config.get('SHOW_CONSOLE', True)
             
-            if not show_console and os.name == 'nt':
-                # 在 Windows 上隱藏控制台視窗
+            if os.name == 'nt':
                 whnd = ctypes.windll.kernel32.GetConsoleWindow()
                 if whnd != 0:
-                    ctypes.windll.user32.ShowWindow(whnd, 0) # 0 = SW_HIDE
+                    if show_console:
+                        ctypes.windll.user32.ShowWindow(whnd, 5) # 5 = SW_SHOW
+                    else:
+                        ctypes.windll.user32.ShowWindow(whnd, 0) # 0 = SW_HIDE
     except Exception as e:
         print(f"[DEBUG] Console visibility control failed: {e}")
 

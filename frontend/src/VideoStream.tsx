@@ -140,11 +140,11 @@ const VideoStream: React.FC = () => {
   const startSenderExamActual = () => {
     const bank = questions[system];
     if (bank && bank.length > 0) {
-      let testStr = "";
-      for (let i = 0; i < 5; i++) {
-        testStr += bank[Math.floor(Math.random() * bank.length)];
-        if (i < 4) testStr += ",";
-      }
+      // 隨機選出 5 個不重複的題目
+      const shuffled = [...bank].sort(() => 0.5 - Math.random());
+      const selected = shuffled.slice(0, Math.min(5, shuffled.length));
+      const testStr = selected.join(',');
+      
       sendMessage('set_challenge_mode', { enabled: true, chars: testStr, type: 'exam' });
       setSenderMode('exam');
     } else alert("題庫載入中...");
@@ -190,9 +190,21 @@ const VideoStream: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    sendMessage('set_mode', { mode: 'practice', system });
+  }, [system, sendMessage]);
+
+  useEffect(() => {
+    sendMessage('set_camera', { device_id: selectedCameraIndex.toString() });
+  }, [selectedCameraIndex, sendMessage]);
+
+  useEffect(() => {
     const ws = new WebSocket(`ws://${window.location.hostname}:8000/ws`);
     wsRef.current = ws;
-    ws.onopen = () => sendMessage('set_mode', { mode: 'practice', system });
+    ws.onopen = () => {
+      // 初始連線時發送當前狀態
+      sendMessage('set_mode', { mode: 'practice', system });
+      sendMessage('set_camera', { device_id: selectedCameraIndex.toString() });
+    };
     ws.onmessage = (event) => {
       const payload = JSON.parse(event.data);
       if (payload.image) {
@@ -245,7 +257,7 @@ const VideoStream: React.FC = () => {
       }
     };
     return () => ws.close();
-  }, [system, sendMessage, isAudioEnabled]);
+  }, [sendMessage]);
 
   const generateOptions = useCallback((correctChar: string) => {
     let chars: string[] = [];
@@ -281,7 +293,7 @@ const VideoStream: React.FC = () => {
       const bank = questions[system];
       if (bank && bank.length > 0) {
         const shuffled = [...bank].sort(() => 0.5 - Math.random());
-        const selected = shuffled.slice(0, Math.min(5, shuffled.length));
+        const selected = shuffled.slice(0, Math.min(10, shuffled.length));
         const testStr = selected.join('');
         setReceiverTargetString(testStr);
         setReceiverCurrentIndex(0);
@@ -349,7 +361,7 @@ const VideoStream: React.FC = () => {
         const bank = questions[system];
         if (bank && bank.length > 0) {
           const shuffled = [...bank].sort(() => 0.5 - Math.random());
-          const selected = shuffled.slice(0, Math.min(5, shuffled.length));
+          const selected = shuffled.slice(0, Math.min(10, shuffled.length));
           const testStr = selected.join('');
           
           setReceiverTargetString(testStr);
