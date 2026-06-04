@@ -251,13 +251,12 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
     fps_frame_count = 0
     current_backend_fps = 0
     
-    experiment_frame_count = 0
-    experiment_accumulated_time = 0.0
+    # 效能分析統計變數
+    perf_accumulated_latency = 0.0
+    perf_frame_count_period = 0
 
     try:
         while True:
-            t_start = time.time()
-            
             if is_camera_off:
                 frame = np.zeros((frame_height, frame_width, 3), dtype=np.uint8)
                 ret = True
@@ -266,14 +265,30 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                 ret, frame = cap.read()
 
             if not ret: break
+            
+            # --- 效能計時開始 (僅計算推論與邏輯，排除攝影機等待時間) ---
+            t_start = time.time()
+            
             current_time = time.time()
             frame_counter += 1
             
             fps_frame_count += 1
             if current_time - fps_start_time >= 1.0:
                 current_backend_fps = round(fps_frame_count / (current_time - fps_start_time))
+                avg_latency_ms = (perf_accumulated_latency / max(1, perf_frame_count_period)) * 1000
+                
                 fps_frame_count = 0
                 fps_start_time = current_time
+                
+                # 輸出效能數據，增加換行符號避免與 Uvicorn 日誌重疊
+                print(f"\n[PERF] FPS: {current_backend_fps} | Processing Latency: {avg_latency_ms:.2f} ms/frame | Device: {compute_device_pref}")
+                
+                # 重置週期性統計
+                perf_accumulated_latency = 0.0
+                perf_frame_count_period = 0
+            
+            if frame_counter % 100 == 0:
+                print(f">>> [REPORT] Total Frames: {frame_counter} | Current Avg FPS: {current_backend_fps}")
             
             # --- 指令同步 ---
             if session_state.get("new_challenge_string") is not None:
@@ -617,6 +632,10 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                 b = last_known_target_person_bbox
                 cv2.rectangle(rs_f, (int(b[0]*DISPLAY_WIDTH/frame_width), int(b[1]*DISPLAY_HEIGHT/frame_height)), (int(b[2]*DISPLAY_WIDTH/frame_width), int(b[3]*DISPLAY_HEIGHT/frame_height)), (255,0,0), 2)
             _, jpeg = cv2.imencode('.jpg', rs_f)
+
+            # 累加處理延遲 (從讀取影像後到編碼完成)
+            perf_accumulated_latency += (time.time() - t_start)
+            perf_frame_count_period += 1
 
             yield jpeg.tobytes(), detection_data
     finally:
