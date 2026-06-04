@@ -42,7 +42,16 @@ def create_video_capture(video_source_str):
         video_source = int(video_source_str)
     except ValueError:
         video_source = video_source_str
-    return cv2.VideoCapture(video_source)
+        
+    print(f"[DEBUG] Opening camera: {video_source}")
+    cap = cv2.VideoCapture(video_source)
+    
+    # 如果預設開啟失敗且在 Windows 上，嘗試 DSHOW
+    if not cap.isOpened() and os.name == 'nt' and isinstance(video_source, int):
+        print(f"[DEBUG] Default open failed, trying CAP_DSHOW...")
+        cap = cv2.VideoCapture(video_source, cv2.CAP_DSHOW)
+            
+    return cap
 
 def load_mapping(csv_file):
     mapping, reverse_mapping = {}, {}

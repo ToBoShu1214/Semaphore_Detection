@@ -98,6 +98,16 @@ const VideoStream: React.FC = () => {
   const lastStateRef = useRef<string>('');
   const lastErrorLockRef = useRef<boolean>(false);
 
+  const playAudio = useCallback((key: keyof typeof audioRefs) => {
+    if (!isAudioEnabled) return;
+    const audio = audioRefs[key].current;
+    if (audio) {
+      audio.pause();
+      audio.currentTime = 0;
+      audio.play().catch(err => console.error("Audio play error:", err));
+    }
+  }, [isAudioEnabled]);
+
   const startCountdown = (callback: () => void) => {
     setCountdown(3);
     const timer = setInterval(() => {
@@ -194,11 +204,17 @@ const VideoStream: React.FC = () => {
       if (payload.data) {
         const data: DetectionData = payload.data;
         setDetectionData(data);
+
+        // 當系統回到 IDLE 且不在挑戰模式時，重置本地模式紀錄
+        if (data.state === 'IDLE' && !data.challenge_info?.is_challenge_mode) {
+          setSenderMode('free'); 
+        }
+
         if (isAudioEnabled) {
           // 狀態變更時的音效處理
           if (data.state !== lastStateRef.current) {
             if (data.state === 'CHALLENGE_COMPLETE_PROMPT') {
-              audioRefs.success.current.play().catch(()=>{});
+              playAudio('success');
               setResultOverlay({
                 title: data.challenge_info?.challenge_type === 'exam' ? '測驗完成' : '練習完成',
                 content: data.word_history.join('')
@@ -206,16 +222,16 @@ const VideoStream: React.FC = () => {
               setTimeout(() => setResultOverlay(null), 2500);
             } else if (data.state === 'COOLDOWN' || data.state === 'CHALLENGE_AWAITING_GESTURE') {
               if (!data.challenge_info?.is_error_locked) {
-                audioRefs.correct.current.play().catch(()=>{});
+                playAudio('correct');
               }
             }
           }
           // 錯誤鎖定狀態變更時的音效處理 (防止重複播放)
           if (data.challenge_info?.is_error_locked && !lastErrorLockRef.current) {
-             audioRefs.incorrect.current.play().catch(()=>{});
+             playAudio('incorrect');
           } else if (!data.challenge_info?.is_error_locked && lastErrorLockRef.current && data.current_digit === 'cancel') {
              // 解除鎖定時播正確音效
-             audioRefs.correct.current.play().catch(()=>{});
+             playAudio('correct');
           }
         }
         lastStateRef.current = data.state;
@@ -298,7 +314,7 @@ const VideoStream: React.FC = () => {
     const correctChar = receiverTargetString[receiverCurrentIndex];
     if (opt === correctChar) {
       setReceiverFeedback({ text: '正確！', type: 'success' });
-      if (isAudioEnabled) audioRefs.ok.current.play().catch(()=>{});
+      playAudio('ok');
       
       if (receiverMode === 'exam' && !receiverHasErrored) {
           setReceiverCorrectCount(prev => prev + 1);
@@ -320,13 +336,13 @@ const VideoStream: React.FC = () => {
             setResultOverlay(null);
             setIsReceiverActive(false);
           }, 2500);
-          if (isAudioEnabled) audioRefs.success.current.play().catch(()=>{});
+          playAudio('success');
         }
       }, 1000);
     } else {
       setReceiverFeedback({ text: '錯誤！', type: 'error' });
       if (receiverMode === 'exam') setReceiverHasErrored(true);
-      if (isAudioEnabled) audioRefs.incorrect.current.play().catch(()=>{});
+      playAudio('incorrect');
     }
   };
 
@@ -480,11 +496,14 @@ const VideoStream: React.FC = () => {
               {(() => {
                 if (role === 'sender') {
                   let prefix = '';
-                  const isActive = detectionData && (detectionData.challenge_info?.is_challenge_mode || detectionData.state !== 'IDLE');
-                  if (isActive) {
-                    if (senderMode === 'exam') prefix = '【隨機測驗】 ';
-                    else if (senderMode === 'practice') prefix = '【指定練習】 ';
-                    else prefix = '【自由練習】 ';
+                  const isChallenge = detectionData?.challenge_info?.is_challenge_mode;
+                  const isWorking = detectionData && detectionData.state !== 'IDLE';
+
+                  if (isChallenge) {
+                    if (senderMode === 'exam' || detectionData?.challenge_info?.challenge_type === 'exam') prefix = '【隨機測驗】 ';
+                    else prefix = '【指定練習】 ';
+                  } else if (isWorking) {
+                    prefix = '【自由練習】 ';
                   } else {
                     prefix = '【系統待機】 ';
                   }
