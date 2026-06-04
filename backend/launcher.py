@@ -4,13 +4,32 @@ import threading
 import time
 import os
 import sys
-import requests # 需要 pip install requests
+import requests
+import json
+import ctypes
 
 # 取得資源路徑
 def get_resource_path(relative_path):
     if hasattr(sys, '_MEIPASS'):
         return os.path.join(sys._MEIPASS, relative_path)
     return os.path.join(os.path.abspath("."), relative_path)
+
+def handle_console_visibility():
+    """根據 config.json 動態控制控制台視窗的顯示/隱藏"""
+    try:
+        config_path = get_resource_path('config.json')
+        if os.path.exists(config_path):
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            show_console = config.get('SHOW_CONSOLE', True)
+            
+            if not show_console and os.name == 'nt':
+                # 在 Windows 上隱藏控制台視窗
+                whnd = ctypes.windll.kernel32.GetConsoleWindow()
+                if whnd != 0:
+                    ctypes.windll.user32.ShowWindow(whnd, 0) # 0 = SW_HIDE
+    except Exception as e:
+        print(f"[DEBUG] Console visibility control failed: {e}")
 
 def wait_for_server():
     """不斷檢查後端是否啟動成功"""
@@ -43,6 +62,9 @@ def start_server():
         print(f"[ERROR] 後端啟動失敗: {e}")
 
 if __name__ == "__main__":
+    # 0. 處理控制台顯示邏輯
+    handle_console_visibility()
+
     # 資源檢查
     # 優先嘗試 _MEIPASS (打包後)
     if hasattr(sys, '_MEIPASS'):

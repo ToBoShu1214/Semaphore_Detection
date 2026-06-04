@@ -51,5 +51,8 @@
 
     "_comment_display_settings": "顯示設定 (Display Settings)",
     "DISPLAY_WIDTH": 1280,
-    "_comment_DISPLAY_WIDTH": "後端輸出影像的寬度 (像素)。高度會根據原始影片比例自動計算。"
+    "_comment_DISPLAY_WIDTH": "後端輸出影像的寬度 (像素)。高度會根據原始影片比例自動計算。",
+
+    "SHOW_CONSOLE": true,
+    "_comment_SHOW_CONSOLE": "是否在啟動時顯示控制台視窗 (用於效能分析)。"
 }
