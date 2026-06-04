@@ -97,6 +97,8 @@ const VideoStream: React.FC = () => {
 
   const lastStateRef = useRef<string>('');
   const lastErrorLockRef = useRef<boolean>(false);
+  const senderModeRef = useRef<string>(senderMode);
+  senderModeRef.current = senderMode;
 
   const playAudio = useCallback((key: keyof typeof audioRefs) => {
     if (!isAudioEnabled) return;
@@ -208,7 +210,7 @@ const VideoStream: React.FC = () => {
         // 當系統回到 IDLE 且不在挑戰模式時，重置本地模式紀錄
         // 修正：只有當不在測驗模式，或測驗數據已清空時才重置，避免正確率一結束就消失
         if (data.state === 'IDLE' && !data.challenge_info?.is_challenge_mode) {
-          if (senderMode !== 'exam' || !data.exam_stats) {
+          if (senderModeRef.current !== 'exam' || !data.exam_stats) {
             setSenderMode(prev => prev !== 'free' ? 'free' : prev); 
           }
         }
@@ -244,19 +246,6 @@ const VideoStream: React.FC = () => {
     };
     return () => ws.close();
   }, [system, sendMessage, isAudioEnabled]);
-
-  const startSenderExam = () => {
-    const bank = questions[system];
-    if (bank && bank.length > 0) {
-      let testStr = "";
-      for (let i = 0; i < 5; i++) {
-        testStr += bank[Math.floor(Math.random() * bank.length)];
-        if (i < 4) testStr += ",";
-      }
-      setSenderMode('exam');
-      sendMessage('set_challenge_mode', { enabled: true, chars: testStr, type: 'exam' });
-    } else alert("題庫載入中...");
-  };
 
   const generateOptions = useCallback((correctChar: string) => {
     let chars: string[] = [];
