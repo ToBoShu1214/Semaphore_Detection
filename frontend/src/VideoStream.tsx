@@ -206,8 +206,11 @@ const VideoStream: React.FC = () => {
         setDetectionData(data);
 
         // 當系統回到 IDLE 且不在挑戰模式時，重置本地模式紀錄
+        // 修正：只有當不在測驗模式，或測驗數據已清空時才重置，避免正確率一結束就消失
         if (data.state === 'IDLE' && !data.challenge_info?.is_challenge_mode) {
-          setSenderMode('free'); 
+          if (senderMode !== 'exam' || !data.exam_stats) {
+            setSenderMode(prev => prev !== 'free' ? 'free' : prev); 
+          }
         }
 
         if (isAudioEnabled) {
