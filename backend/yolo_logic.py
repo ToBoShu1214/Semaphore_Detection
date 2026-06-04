@@ -254,19 +254,21 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
     # 效能分析統計變數
     perf_accumulated_latency = 0.0
     perf_frame_count_period = 0
+    avg_latency_ms = 0.0 # 預先初始化
 
     try:
         while True:
+            # --- 影像擷取 (此部分可能因攝影機 FPS 限制而阻塞) ---
             if is_camera_off:
                 frame = np.zeros((frame_height, frame_width, 3), dtype=np.uint8)
                 ret = True
-                time.sleep(0.1) # 降低 CPU 使用率
+                time.sleep(0.1) 
             else:
                 ret, frame = cap.read()
 
             if not ret: break
             
-            # --- 效能計時開始 (僅計算推論與邏輯，排除攝影機等待時間) ---
+            # --- 效能計時開始 (僅計算純推論與運算耗時，不計入攝影機等待) ---
             t_start = time.time()
             
             current_time = time.time()
@@ -280,15 +282,20 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                 fps_frame_count = 0
                 fps_start_time = current_time
                 
-                # 輸出效能數據，增加換行符號避免與 Uvicorn 日誌重疊
-                print(f"\n[PERF] FPS: {current_backend_fps} | Processing Latency: {avg_latency_ms:.2f} ms/frame | Device: {compute_device_pref}")
+                # 決定模式顯示名稱
+                mode_name = "自由練習"
+                if is_in_challenge_mode:
+                    mode_name = "隨機測驗" if challenge_type == "exam" else "指定練習"
+
+                # 輸出精準效能數據
+                print(f"\n[PERF] FPS: {current_backend_fps} | 單幀處理延遲: {avg_latency_ms:.2f} ms/frame | 設備: {device.upper()} | 模式: {mode_name}")
                 
                 # 重置週期性統計
                 perf_accumulated_latency = 0.0
                 perf_frame_count_period = 0
             
             if frame_counter % 100 == 0:
-                print(f">>> [REPORT] Total Frames: {frame_counter} | Current Avg FPS: {current_backend_fps}")
+                print(f">>> [REPORT] 總幀數: {frame_counter} | 目前平均延遲: {avg_latency_ms:.2f} ms/frame")
             
             # --- 指令同步 ---
             if session_state.get("new_challenge_string") is not None:
@@ -417,8 +424,7 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                         is_in_challenge_mode = False
                         challenge_target_string, current_char_target_sequence, challenge_user_sequence, word_history = "", [], [], []
                         is_error_locked = False
-                        if session_state and "exam_stats" in session_state:
-                            del session_state["exam_stats"]
+                        # 保留 exam_stats 以供顯示
             elif target_kpts is not None:
                 target_lost_start_time = 0.0
                 try:
@@ -564,7 +570,7 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                     word_history.clear()
                     state = "IDLE"
                     is_in_challenge_mode = False
-                    if "exam_stats" in session_state: del session_state["exam_stats"]
+                    # 保留 exam_stats 以供顯示
 
                 # --- 畫面提示文字 (Prompt) ---
             corr_info = {"target_signal":None,"target_l_angle":None,"target_r_angle":None,"l_angle_diff":None,"r_angle_diff":None,"l_angle_ok":False,"r_angle_ok":False,"l_arm_straight_ok":False,"r_arm_straight_ok":False,"l_advice":"-","r_advice":"-","is_correct":False}
