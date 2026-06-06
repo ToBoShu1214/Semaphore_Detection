@@ -618,7 +618,7 @@ def run_detection(video_source_str='0', model_path='yolo11s-pose.pt', flag_model
                     else:
                         pc = f"請比出 {current_char_target_sequence[current_char_next_digit_index]}"
                 else: pc = "準備就緒，開始比劃"
-            elif state == "DETECTING": pc = f"偵測到 {current_digit}..." if current_digit else "偵測中..."
+            elif state == "DETECTING": pc = "偵測到信號..." if current_digit else "偵測中..."
             elif state == "GRACE_PERIOD": pc = "判定中..."
             elif state == "COOLDOWN": pc = "成功！請放下雙手"
 

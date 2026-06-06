@@ -53,10 +53,10 @@ const VideoStream: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const audioRefs = {
-    correct: useRef<HTMLAudioElement>(new Audio('/digits/correct.mp3')),
-    success: useRef<HTMLAudioElement>(new Audio('/digits/success.mp3')),
-    incorrect: useRef<HTMLAudioElement>(new Audio('/digits/incorrect.mp3')),
-    ok: useRef<HTMLAudioElement>(new Audio('/digits/ok.mp3'))
+    correct: useRef<HTMLAudioElement>(null),
+    success: useRef<HTMLAudioElement>(null),
+    incorrect: useRef<HTMLAudioElement>(null),
+    ok: useRef<HTMLAudioElement>(null)
   };
 
   const [detectionData, setDetectionData] = useState<DetectionData | null>(null);
@@ -100,13 +100,20 @@ const VideoStream: React.FC = () => {
   const senderModeRef = useRef<string>(senderMode);
   senderModeRef.current = senderMode;
 
+  const audioTimeoutRef = useRef<any>(null);
+
   const playAudio = useCallback((key: keyof typeof audioRefs) => {
     if (!isAudioEnabled) return;
     const audio = audioRefs[key].current;
     if (audio) {
-      audio.pause();
-      audio.currentTime = 0;
-      audio.play().catch(err => console.error("Audio play error:", err));
+      if (audioTimeoutRef.current) {
+        clearTimeout(audioTimeoutRef.current);
+      }
+      audioTimeoutRef.current = setTimeout(() => {
+        audio.pause();
+        audio.currentTime = 0;
+        audio.play().catch(err => console.error("Audio play error:", err));
+      }, 50);
     }
   }, [isAudioEnabled]);
 
@@ -393,6 +400,12 @@ const VideoStream: React.FC = () => {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', backgroundColor: '#121212', color: '#e0e0e0', height: '100vh', width: '100vw', overflow: 'hidden' }}>
+      {/* Hidden audio elements for robust playback */}
+      <audio ref={audioRefs.correct} src="/digits/correct.mp3" preload="auto" />
+      <audio ref={audioRefs.success} src="/digits/success.mp3" preload="auto" />
+      <audio ref={audioRefs.incorrect} src="/digits/incorrect.mp3" preload="auto" />
+      <audio ref={audioRefs.ok} src="/digits/ok.mp3" preload="auto" />
+
       {resultOverlay && (
         <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', backgroundColor: 'rgba(40, 167, 69, 0.95)', padding: '40px 80px', borderRadius: '20px', zIndex: 999, textAlign: 'center', animation: 'popInOut 2.5s forwards' }}>
           <h2 style={{ fontSize: '2em', margin: '0 0 10px 0' }}>{resultOverlay.title}</h2>

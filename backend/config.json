@@ -50,7 +50,7 @@
     "_comment_TARGET_LOST_TIMEOUT": "目標丟失後的寬限時間 (秒)。在這段時間內，系統會繼續使用最後的已知位置。",
 
     "_comment_display_settings": "顯示設定 (Display Settings)",
-    "DISPLAY_WIDTH": 1280,
+    "DISPLAY_WIDTH": 800,
     "_comment_DISPLAY_WIDTH": "後端輸出影像的寬度 (像素)。高度會根據原始影片比例自動計算。",
 
     "SHOW_CONSOLE": true,
